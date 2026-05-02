@@ -1,5 +1,8 @@
 <script setup>
 import { ref } from 'vue';
+import FileIcon from './icons/FileIcon.vue';
+import CloseIcon from './icons/CloseIcon.vue';
+import { formatSize } from '@/composables/useFormat';
 
 const props = defineProps({
   files: {
@@ -57,11 +60,12 @@ function handleMiddleClick(e, fileId) {
         @dragover="handleDragOver($event, files.indexOf(file))"
         @dragend="handleDragEnd"
       >
+        <FileIcon :size="14" class="tab-icon" />
         <span class="tab-name">{{ file.name }}</span>
-        <span
-          class="tab-close"
-          @click.stop="emit('closeTab', file.id)"
-        >×</span>
+        <span class="tab-size">{{ formatSize(file.size) }}</span>
+        <button class="tab-close" @click.stop="emit('closeTab', file.id)">
+          <CloseIcon :size="12" />
+        </button>
       </div>
     </div>
   </div>
@@ -95,13 +99,13 @@ function handleMiddleClick(e, fileId) {
 .tab {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 12px;
-  height: 100%;
+  gap: 6px;
+  padding: 0 10px;
+  height: 36px;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--border);
   cursor: pointer;
-  transition: background var(--transition-fast);
+  transition: all 150ms;
   min-width: 100px;
   max-width: 180px;
   position: relative;
@@ -112,21 +116,18 @@ function handleMiddleClick(e, fileId) {
 }
 
 .tab.active {
-  background: var(--bg);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border-top: 1px solid var(--accent);
 }
 
-.tab.active::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: var(--accent);
+.tab-icon {
+  color: var(--accent);
+  flex-shrink: 0;
 }
 
 .tab-name {
-  flex: 1;
+  max-width: 120px;
   font-size: 13px;
   color: var(--text-secondary);
   overflow: hidden;
@@ -135,27 +136,40 @@ function handleMiddleClick(e, fileId) {
 }
 
 .tab.active .tab-name {
-  color: var(--text);
+  color: var(--text-primary);
+}
+
+.tab-size {
+  font-size: 10px;
+  color: var(--text-secondary);
+  padding: 1px 4px;
+  background: var(--bg-hover);
+  border-radius: 3px;
+  flex-shrink: 0;
 }
 
 .tab-close {
-  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  display: flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  border: none;
+  background: transparent;
   color: var(--text-secondary);
-  font-size: 16px;
+  border-radius: 3px;
   cursor: pointer;
-  border-radius: 4px;
-  opacity: 1;
-  transition: all var(--transition-fast);
+  opacity: 0;
+  transition: all 150ms;
   flex-shrink: 0;
-  line-height: 1;
+}
+
+.tab:hover .tab-close {
+  opacity: 1;
 }
 
 .tab-close:hover {
-  background: rgba(0, 0, 0, 0.08);
-  color: var(--text);
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 </style>

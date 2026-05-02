@@ -1,55 +1,83 @@
 :root {
-  /* 极简风格 - Apple/Linear/Notion 设计 */
-  --bg: #f5f5f7;
-  --sidebar-bg: #ffffff;
-  --editor-bg: #fafafa;
-  --statusbar-bg: transparent;
-  --border: #e5e5e5;
-  --text: #2a2a2a;
-  --text-secondary: #6e6e6e;
-  --accent: #0071e3;
-  --accent-hover: #0077ed;
-  --btn-border: transparent;
-  --btn-text: #2a2a2a;
-  --btn-text-light: #ffffff;
-  --empty-icon: #d0d0d0;
-  --hover-bg: rgba(0, 0, 0, 0.04);
-  --active-bg: rgba(0, 0, 0, 0.06);
+  /* 深色主题（默认）*/
+  --bg-primary: #0d0d15;
+  --bg-secondary: #111118;
+  --bg-tertiary: #0d0d15;
+  --bg-hover: #1e1e2e;
+  --bg-active: #1e1e2e;
+  --bg-input: #111118;
+  --border: #1e1e2e;
+  --border-light: #2a2a3a;
+  --divider: #1e1e2e;
+  --text-primary: #d4c5a9;
+  --text-secondary: #5a5a6e;
+  --text-tertiary: #3a3a4e;
+  --text-disabled: #3a3a4e;
+  --accent: #c8b88a;
+  --accent-hover: #d4c5a9;
+  --accent-light: rgba(200, 184, 138, 0.15);
+  --success: #89d185;
+  --warning: #f9ab00;
+  --error: #f44747;
 
-  /* 语法高亮 - 低饱和度 */
-  --json-key: #2a2a2a;
-  --json-string: #8b3a3a;
-  --json-number: #4a7c59;
-  --json-boolean: #5a6e7f;
-  --json-null: #5a6e7f;
-  --json-bracket: #8e8e93;
+  --json-key: #c8b88a;
+  --json-string: #89d185;
+  --json-number: #b5cea8;
+  --json-boolean: #569cd6;
+  --json-null: #569cd6;
+  --json-bracket: #5a5a6e;
 
-  /* 状态色 */
-  --success: #34c759;
-  --warning: #ff9500;
-  --error: #ff3b30;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 1px 3px rgba(0, 0, 0, 0.4);
 
-  /* 字体 */
   --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-code: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
   --font-size-ui: 13px;
-  --font-size-content: 14px;
   --font-size-small: 11px;
 
-  /* 布局尺寸 */
   --sidebar-width: 220px;
   --statusbar-height: 24px;
-  --titlebar-height: 36px;
-  --tab-height: 32px;
-  --searchbar-height: 40px;
+  --titlebar-height: 40px;
+  --tab-height: 36px;
 
-  /* 间距 */
   --line-height: 28px;
   --indent-width: 20px;
   --spacing: 8px;
-
-  /* 过渡 */
   --transition-fast: 150ms ease;
+
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f8f9fa;
+  --bg-tertiary: #f1f3f4;
+  --bg-hover: #e8eaed;
+  --bg-active: #d2e3fc;
+  --bg-input: #ffffff;
+  --border: #dadce0;
+  --border-light: #e8eaed;
+  --divider: #e8eaed;
+  --text-primary: #202124;
+  --text-secondary: #5f6368;
+  --text-tertiary: #80868b;
+  --text-disabled: #bdc1c6;
+  --accent: #1a73e8;
+  --accent-hover: #174ea6;
+  --accent-light: #e8f0fe;
+  --success: #34a853;
+  --warning: #f9ab00;
+  --error: #ea4335;
+
+  --json-key: #1967d2;
+  --json-string: #c5221f;
+  --json-number: #188038;
+  --json-boolean: #1967d2;
+  --json-null: #80868b;
+  --json-bracket: #5f6368;
+
+  --shadow-sm: 0 1px 2px rgba(60, 64, 67, 0.08);
+  --shadow-md: 0 1px 3px rgba(60, 64, 67, 0.12);
 
   color-scheme: light;
 }
@@ -65,8 +93,8 @@ html, body {
   overflow: hidden;
   font-family: var(--font-ui);
   font-size: var(--font-size-ui);
-  color: var(--text);
-  background: var(--bg);
+  color: var(--text-primary);
+  background: var(--bg-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -92,4 +120,175 @@ html, body {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-secondary);
   opacity: 0.4;
+}
+
+.app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.title-bar {
+  height: var(--titlebar-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  -webkit-app-region: drag;
+}
+
+.title-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  -webkit-app-region: no-drag;
+}
+
+.logo-icon {
+  color: var(--accent);
+}
+
+.logo-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.logo-pro {
+  color: var(--accent);
+}
+
+.title-separator {
+  color: var(--border);
+  margin: 0 4px;
+}
+
+.doc-title {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.title-center {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  -webkit-app-region: no-drag;
+}
+
+.title-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  -webkit-app-region: no-drag;
+}
+
+.action-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.action-btn:hover:not(:disabled) {
+  color: var(--accent);
+  background: var(--accent-light);
+}
+
+.action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.action-btn .btn-icon {
+  color: inherit;
+}
+
+.icon-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.main-content {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.sidebar {
+  width: var(--sidebar-width);
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.editor-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.btn {
+  padding: 6px 14px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 13px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--bg-primary);
+  border-color: var(--accent);
+}
+
+.btn-primary:hover {
+  opacity: 0.9;
+}
+
+[data-theme="dark"] .btn-primary {
+  color: #0d0d15;
+}
+
+[data-theme="light"] .btn-primary {
+  color: #fafafa;
 }

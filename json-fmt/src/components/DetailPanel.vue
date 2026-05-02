@@ -56,6 +56,61 @@ function getTypeColor(type) {
   };
   return colors[type] || 'var(--vscode-text)';
 }
+
+function formatPath(path) {
+  if (!path || path.length === 0) return 'root';
+  
+  if (typeof path === 'string') {
+    const parts = path.split('.');
+    let result = [];
+    let lastNonArrayPart = '';
+    
+    for (let part of parts) {
+      if (!part.match(/^\[\d+\]$/)) {
+        result.push(part);
+        lastNonArrayPart = part;
+      }
+    }
+    
+    let lastArrayIndex = -1;
+    for (let i = parts.length - 1; i >= 0; i--) {
+      if (parts[i].match(/^\[\d+\]$/)) {
+        lastArrayIndex = i;
+        break;
+      }
+    }
+    
+    if (lastArrayIndex >= 0) {
+      const lastArrayPart = parts[lastArrayIndex];
+      if (result.length === 0) {
+        result.push(lastArrayPart);
+      } else {
+        result[result.length - 1] += lastArrayPart;
+      }
+    }
+    
+    return result.join('.');
+  }
+  
+  let result = [];
+  for (let i = 0; i < path.length; i++) {
+    const p = path[i];
+    if (typeof p !== 'number') {
+      result.push(p);
+    }
+  }
+  
+  const lastElement = path[path.length - 1];
+  if (typeof lastElement === 'number') {
+    if (result.length === 0) {
+      result.push('[' + lastElement + ']');
+    } else {
+      result[result.length - 1] += '[' + lastElement + ']';
+    }
+  }
+  
+  return result.join('.');
+}
 </script>
 
 <template>
@@ -115,7 +170,7 @@ function getTypeColor(type) {
         <div class="detail-row">
           <span class="detail-label">路径</span>
           <span class="detail-value path-value" :title="node.pathStr">
-            {{ node.pathStr || 'root' }}
+            {{ formatPath(node.pathStr) }}
           </span>
         </div>
 

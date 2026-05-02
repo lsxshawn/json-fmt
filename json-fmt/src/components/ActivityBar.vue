@@ -1,4 +1,9 @@
 <script setup>
+import FolderIcon from './icons/FolderIcon.vue';
+import SearchIcon from './icons/SearchIcon.vue';
+import ListTreeIcon from './icons/ListTreeIcon.vue';
+import MoreIcon from './icons/MoreIcon.vue';
+
 defineProps({
   activeView: {
     type: String,
@@ -9,10 +14,10 @@ defineProps({
 const emit = defineEmits(['navigate']);
 
 const views = [
-  { id: 'explorer', icon: '📁', title: '文件资源管理器' },
-  { id: 'search', icon: '🔍', title: '搜索' },
-  { id: 'outline', icon: '🌲', title: '大纲' },
-  { id: 'settings', icon: '⚙️', title: '设置' }
+  { id: 'explorer', title: '文件资源管理器', icon: 'folder' },
+  { id: 'search', title: '搜索', icon: 'search' },
+  { id: 'outline', title: '大纲', icon: 'list-tree' },
+  { id: 'settings', title: '设置', icon: 'more' }
 ];
 </script>
 
@@ -27,15 +32,18 @@ const views = [
         :title="view.title"
         @click="emit('navigate', view.id)"
       >
-        <span class="icon">{{ view.icon }}</span>
+        <FolderIcon v-if="view.id === 'explorer'" :size="24" class="icon-svg"/>
+        <SearchIcon v-else-if="view.id === 'search'" :size="24" class="icon-svg"/>
+        <ListTreeIcon v-else-if="view.id === 'outline'" :size="24" class="icon-svg"/>
+        <MoreIcon v-else-if="view.id === 'settings'" :size="24" class="icon-svg"/>
       </button>
     </div>
     <div class="activity-bottom">
       <button class="activity-icon" title="账户">
-        <span class="icon">👤</span>
-      </button>
-      <button class="activity-icon" title="主题">
-        <span class="icon">🎨</span>
+        <svg class="icon-svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/>
+          <circle cx="12" cy="7" r="4"/>
+        </svg>
       </button>
     </div>
   </div>
@@ -43,12 +51,11 @@ const views = [
 
 <style scoped>
 .activity-bar {
-  width: var(--activitybar-width);
-  background: var(--vscode-activitybar-bg);
+  width: 48px;
+  background: #2c2c2c;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  border-right: 1px solid var(--vscode-border);
   flex-shrink: 0;
 }
 
@@ -68,15 +75,17 @@ const views = [
   border: none;
   cursor: pointer;
   position: relative;
-  transition: var(--transition-fast);
+  transition: all 150ms ease;
+  color: #858585;
 }
 
 .activity-icon:hover {
-  background: var(--vscode-hover-bg);
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .activity-icon.active {
-  background: var(--vscode-hover-bg);
+  color: #ffffff;
 }
 
 .activity-icon.active::before {
@@ -86,17 +95,12 @@ const views = [
   top: 0;
   bottom: 0;
   width: 2px;
-  background: var(--vscode-accent);
+  background: #007acc;
 }
 
-.icon {
-  font-size: 24px;
-  opacity: 0.7;
-}
-
-.activity-icon:hover .icon,
-.activity-icon.active .icon {
-  opacity: 1;
+.icon-svg {
+  width: 24px;
+  height: 24px;
 }
 
 .activity-bottom {

@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue';
+import PlusIcon from './icons/PlusIcon.vue';
 
 const props = defineProps({
   files: {
@@ -25,38 +25,47 @@ function formatFileSize(bytes) {
 <template>
   <div class="sidebar">
     <div class="sidebar-header">
-      <span class="sidebar-title">资源管理器</span>
+      <div class="header-left">
+        <span class="sidebar-title">文件</span>
+        <span class="file-count" v-if="files.length">{{ files.length }}</span>
+      </div>
+      <button class="sidebar-action" title="新建文件" @click="emit('openFiles')">
+        <PlusIcon :size="14" />
+      </button>
     </div>
 
-    <div class="file-tree">
-      <div v-if="files.length === 0" class="empty-tree">
-        <div class="empty-text">暂无文件</div>
+    <div class="sidebar-content">
+      <div v-if="files.length === 0" class="empty-state">
+        <svg class="empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+          <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+        </svg>
+        <p class="empty-title">还没有文件</p>
+        <p class="empty-desc">点击打开文件开始浏览 JSON</p>
       </div>
 
-      <div v-else>
+      <div v-else class="file-list">
         <div
           v-for="file in files"
           :key="file.id"
-          class="file-tree-item"
+          class="file-item"
           :class="{ active: file.id === currentFileId }"
           @click="emit('selectFile', file.id)"
         >
+          <svg class="file-icon" width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M3 1h7l3 3v10a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z"/>
+          </svg>
           <span class="file-name" :title="file.name">{{ file.name }}</span>
-          <div class="file-actions">
-            <span class="file-size">{{ formatFileSize(file.size) }}</span>
-            <span
-              class="file-delete"
-              @click.stop="emit('deleteFile', file.id)"
-              title="删除文件"
-            >×</span>
-          </div>
+          <span class="file-size">{{ formatFileSize(file.size) }}</span>
         </div>
       </div>
     </div>
 
     <div class="sidebar-footer">
       <label class="footer-btn">
-        <span class="btn-text">打开文件</span>
+        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+        </svg>
+        <span>打开文件</span>
         <input
           type="file"
           accept=".json,application/json"
@@ -64,8 +73,11 @@ function formatFileSize(bytes) {
           @change="e => emit('openFiles', Array.from(e.target.files))"
         />
       </label>
-      <button class="footer-btn" @click="emit('clearCache')">
-        <span class="btn-text">清除全部</span>
+      <button class="footer-btn" :disabled="files.length === 0" @click="emit('clearCache')">
+        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+        </svg>
+        <span>清除全部</span>
       </button>
     </div>
   </div>
@@ -74,76 +86,134 @@ function formatFileSize(bytes) {
 <style scoped>
 .sidebar {
   width: var(--sidebar-width);
-  background: var(--sidebar-bg);
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--border);
   flex-shrink: 0;
 }
 
 .sidebar-header {
-  padding: 16px 16px 12px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
   border-bottom: 1px solid var(--border);
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .sidebar-title {
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.8px;
   color: var(--text-secondary);
 }
 
-.file-tree {
-  flex: 1;
-  overflow-y: auto;
-  padding: 8px 0;
+.file-count {
+  font-size: 10px;
+  padding: 1px 5px;
+  background: var(--border);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-weight: 500;
 }
 
-.empty-tree {
+.sidebar-action {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 150ms;
+}
+
+.sidebar-header:hover .sidebar-action {
+  opacity: 1;
+}
+
+.sidebar-action:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.sidebar-content {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 48px 16px;
+  justify-content: center;
+  padding: 40px 20px;
+  text-align: center;
 }
 
-.empty-text {
-  font-size: 13px;
+.empty-icon {
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+  opacity: 0.5;
+}
+
+.empty-title {
+  font-size: 14px;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.empty-desc {
+  font-size: 12px;
   color: var(--text-secondary);
 }
 
-.file-tree-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 16px;
-  cursor: pointer;
-  transition: background var(--transition-fast);
+.file-list {
+  padding: 4px;
 }
 
-.file-tree-item:hover {
-  background: var(--hover-bg);
-}
-
-.file-tree-item.active {
-  background: var(--active-bg);
-}
-
-.file-name {
-  font-size: 13px;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-}
-
-.file-actions {
+.file-item {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.file-item:hover {
+  background: var(--bg-hover);
+}
+
+.file-item.active {
+  background: var(--bg-active);
+  border-left: 2px solid var(--accent);
+}
+
+.file-icon {
+  color: var(--accent);
   flex-shrink: 0;
-  margin-left: 8px;
+}
+
+.file-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
 }
 
 .file-size {
@@ -152,57 +222,56 @@ function formatFileSize(bytes) {
   flex-shrink: 0;
 }
 
-.file-delete {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  font-size: 14px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  border-radius: 3px;
-  opacity: 0;
-  transition: all var(--transition-fast);
-  flex-shrink: 0;
-}
-
-.file-tree-item:hover .file-delete {
-  opacity: 1;
-}
-
-.file-delete:hover {
-  background: rgba(0, 0, 0, 0.08);
-  color: var(--text);
-}
-
 .sidebar-footer {
-  padding: 12px 16px;
+  padding: 8px 12px;
   border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
+  position: sticky;
+  bottom: 0;
+  background: inherit;
 }
 
 .footer-btn {
   display: flex;
   align-items: center;
-  padding: 8px 0;
-  background: transparent;
+  gap: 8px;
+  padding: 5px 8px;
   border: none;
+  background: transparent;
   color: var(--text-secondary);
-  font-size: 13px;
-  font-family: var(--font-ui);
+  font-size: 12px;
+  border-radius: 4px;
   cursor: pointer;
-  transition: color var(--transition-fast);
-  text-align: left;
+  transition: all 150ms;
+}
+
+.footer-btn:first-child {
+  margin-bottom: 2px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--border);
 }
 
 .footer-btn:hover {
-  color: var(--accent);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.footer-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.footer-btn:disabled:hover {
+  background: transparent;
 }
 
 .footer-btn input {
   display: none;
+}
+
+.btn-icon {
+  flex-shrink: 0;
 }
 </style>

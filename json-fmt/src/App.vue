@@ -8,6 +8,11 @@ import StatusBar from '@/components/StatusBar.vue';
 import DetailPanel from '@/components/DetailPanel.vue';
 import CommandPalette from '@/components/CommandPalette.vue';
 import LogoIcon from '@/components/icons/LogoIcon.vue';
+import FormatIcon from '@/components/icons/FormatIcon.vue';
+import CompressIcon from '@/components/icons/CompressIcon.vue';
+import EscapeIcon from '@/components/icons/EscapeIcon.vue';
+import ThemeIcon from '@/components/icons/ThemeIcon.vue';
+import MoreIcon from '@/components/icons/MoreIcon.vue';
 
 const SAMPLE_JSON = {
   name: 'JSON Pro',
@@ -79,11 +84,31 @@ function createNode(key, value, parentPath = '') {
   if (key !== undefined) path.push(key);
   
   const isRoot = key === undefined;
+  
+  const displayPath = (function() {
+    let result = [];
+    for (let i = 0; i < path.length; i++) {
+      const p = path[i];
+      if (typeof p !== 'number') {
+        result.push(p);
+      }
+    }
+    const lastElement = path[path.length - 1];
+    if (typeof lastElement === 'number') {
+      if (result.length === 0) {
+        result.push('[' + lastElement + ']');
+      } else {
+        result[result.length - 1] += '[' + lastElement + ']';
+      }
+    }
+    return result.join('.');
+  })();
+  
   const node = {
     id,
     key,
     path: [...path],
-    pathStr: path.length > 0 ? (Array.isArray(path) ? path.join('.') : path) : 'root',
+    pathStr: path.length > 0 ? displayPath : 'root',
     collapsed: !isRoot && path.length < 2,
     isRoot
   };
@@ -261,7 +286,8 @@ const storeName = 'files';
 const dbVersion = 1;
 let db = null;
 const showCommandPalette = ref(false);
-const currentTheme = ref('dark');
+const currentTheme = ref('light');
+const fileInputRef = ref(null);
 
 const currentFile = computed(() => files.value.find(f => f.id === currentFileId.value));
 const filteredVisibleNodes = computed(() => {
@@ -383,11 +409,31 @@ function createNodeSync(key, value, parentPath = '') {
   if (key !== undefined) path.push(key);
   
   const isRoot = key === undefined;
+  
+  const displayPath = (function() {
+    let result = [];
+    for (let i = 0; i < path.length; i++) {
+      const p = path[i];
+      if (typeof p !== 'number') {
+        result.push(p);
+      }
+    }
+    const lastElement = path[path.length - 1];
+    if (typeof lastElement === 'number') {
+      if (result.length === 0) {
+        result.push('[' + lastElement + ']');
+      } else {
+        result[result.length - 1] += '[' + lastElement + ']';
+      }
+    }
+    return result.join('.');
+  })();
+  
   const node = {
     id,
     key,
     path: [...path],
-    pathStr: path.length > 0 ? (Array.isArray(path) ? path.join('.') : path) : 'root',
+    pathStr: path.length > 0 ? displayPath : 'root',
     collapsed: !isRoot && path.length < 2,
     isRoot
   };
@@ -630,6 +676,11 @@ async function handleFileSelect(e) {
 }
 
 async function handleOpenFiles(fileList) {
+  if (!fileList || fileList.length === 0) {
+    fileInputRef.value?.click();
+    return;
+  }
+  let lastFileId = null;
   for (const file of fileList) {
     if (!file.name.endsWith('.json') && file.type !== 'application/json') continue;
     const content = await file.text();
@@ -642,10 +693,23 @@ async function handleOpenFiles(fileList) {
     };
     files.value.push(fileData);
     await saveFile(fileData);
+    lastFileId = fileData.id;
   }
-  if (files.value.length > 0 && !currentFileId.value) {
-    selectFile(files.value[files.value.length - 1].id);
+  if (lastFileId) {
+    selectFile(lastFileId);
   }
+}
+
+async function handlePasteContent(text) {
+  const fileData = {
+    id: Date.now() + Math.random(),
+    name: 'pasted-' + new Date().toISOString().slice(0, 10) + '.json',
+    content: text,
+    size: new Blob([text]).size
+  };
+  files.value.push(fileData);
+  await saveFile(fileData);
+  selectFile(fileData.id);
 }
 
 function selectFile(fileId) {
@@ -893,22 +957,19 @@ function handleSearchPrev() {
 }
 
 function toggleTheme() {
-  if (currentTheme.value === 'dark') {
-    currentTheme.value = 'light';
-    document.documentElement.classList.remove('theme-dark');
-    document.documentElement.classList.add('theme-light');
-  } else if (currentTheme.value === 'light') {
-    currentTheme.value = 'hc';
-    document.documentElement.classList.remove('theme-light');
-    document.documentElement.classList.add('theme-hc');
-  } else {
+  if (currentTheme.value === 'light') {
     currentTheme.value = 'dark';
-    document.documentElement.classList.remove('theme-hc');
-    document.documentElement.classList.remove('theme-light');
+    document.documentElement.removeAttribute('data-theme');
+  } else {
+    currentTheme.value = 'light';
+    document.documentElement.setAttribute('data-theme', 'light');
   }
 }
 
 onMounted(async () => {
+  if (currentTheme.value === 'light') {
+    document.documentElement.setAttribute('data-theme', 'light');
+  }
   initWorker();
   await initDB();
   const cached = await loadFiles();
@@ -947,20 +1008,46 @@ onUnmounted(() => {
 
 <template>
   <div class="app" @dragover="handleDragOver" @dragleave="handleDragLeave" @drop="handleDrop">
+    <input
+      ref="fileInputRef"
+      type="file"
+      accept=".json,application/json"
+      multiple
+      style="display: none;"
+      @change="handleFileSelect"
+    />
     <div v-if="isDragging" class="drag-overlay">
       <div class="drag-message">释放文件以打开</div>
     </div>
 
     <header class="title-bar">
       <div class="title-left">
-        <LogoIcon class="title-icon"/>
-        <span class="title-text">JSON</span>
-        <span class="title-accent">Pro</span>
+        <LogoIcon :size="20" class="logo-icon"/>
+        <span class="logo-text">JSON<span class="logo-pro">Pro</span></span>
+        <span class="title-separator">|</span>
+        <span class="doc-title" v-if="currentFile">{{ currentFile.name }}</span>
+      </div>
+      <div class="title-center">
+        <button class="action-btn" @click="formatJSON" :disabled="!currentFile">
+          <FormatIcon :size="14" class="btn-icon"/>
+          <span>格式化</span>
+        </button>
+        <button class="action-btn" @click="compressJSON" :disabled="!currentFile">
+          <CompressIcon :size="14" class="btn-icon"/>
+          <span>压缩</span>
+        </button>
+        <button class="action-btn" @click="toggleEscape" :disabled="!currentFile">
+          <EscapeIcon :size="14" class="btn-icon"/>
+          <span>{{ isEscaped ? '反转义' : '转义' }}</span>
+        </button>
       </div>
       <div class="title-right">
-        <button class="title-btn" @click="formatJSON" :disabled="!currentFile">格式化</button>
-        <button class="title-btn" @click="compressJSON" :disabled="!currentFile">压缩</button>
-        <button class="title-btn" @click="toggleEscape" :disabled="!currentFile">{{ isEscaped ? '反转义' : '转义' }}</button>
+        <button class="icon-btn" title="切换主题" @click="toggleTheme">
+          <ThemeIcon :size="16" class="btn-icon"/>
+        </button>
+        <button class="icon-btn" title="更多" @click="showCommandPalette = true">
+          <MoreIcon :size="16" class="btn-icon"/>
+        </button>
       </div>
     </header>
 
@@ -997,6 +1084,8 @@ onUnmounted(() => {
           @search="handleSearch"
           @searchNext="handleSearchNext"
           @searchPrev="handleSearchPrev"
+          @pasteContent="handlePasteContent"
+          @openFiles="handleOpenFiles"
         />
       </main>
 
@@ -1039,63 +1128,110 @@ onUnmounted(() => {
 }
 
 .title-bar {
-  height: var(--titlebar-height);
+  height: 40px;
+  background: #ffffff;
+  border-bottom: 1px solid #e5e5e5;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px;
-  background: var(--sidebar-bg);
-  border-bottom: 1px solid var(--border);
+  padding: 0 12px;
+  position: relative;
 }
 
 .title-left {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
 }
 
-.title-icon {
-  color: var(--accent);
-  width: 14px;
-  height: 14px;
+.logo-icon {
+  color: #007acc;
+}
+
+.logo-text {
+  font-size: 14px;
+  font-weight: 600;
+  color: #333333;
+}
+
+.logo-pro {
+  color: #007acc;
+}
+
+.title-separator {
+  color: #e5e5e5;
+  margin: 0 4px;
+}
+
+.doc-title {
+  font-size: 13px;
+  color: #6e6e6e;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.title-center {
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 4px;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
 }
 
-.title-text {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--text);
+.action-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: none;
+  background: transparent;
+  color: #6e6e6e;
+  font-size: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 150ms;
 }
 
-.title-accent {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--accent);
+.action-btn:hover:not(:disabled) {
+  background: #f0f0f0;
+  color: #333333;
+}
+
+.action-btn:active:not(:disabled) {
+  background: #e5e5e5;
+}
+
+.btn-icon {
+  width: 14px;
+  height: 14px;
 }
 
 .title-right {
   display: flex;
-  gap: 16px;
+  align-items: center;
+  gap: 4px;
 }
 
-.title-btn {
-  background: transparent;
+.icon-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border: none;
-  color: var(--btn-text);
-  padding: 4px 8px;
-  font-size: 14px;
-  font-family: var(--font-ui);
-  font-weight: 400;
-  cursor: pointer;
-  transition: var(--transition-fast);
+  background: transparent;
+  color: #6e6e6e;
   border-radius: 4px;
+  cursor: pointer;
 }
 
-.title-btn:hover:not(:disabled) {
-  color: var(--accent);
-  background: var(--hover-bg);
+.icon-btn:hover {
+  background: #f0f0f0;
+  color: #333333;
 }
 
 .title-btn:disabled {

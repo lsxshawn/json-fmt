@@ -34,8 +34,8 @@ const scrollRatio = computed(() => {
 
 const sliderStyle = computed(() => {
   const viewportRatio = Math.min(props.viewportHeight / props.totalHeight, 1)
-  const viewportPercent = viewportRatio * 100
-  const maxTop = 92 - viewportPercent
+  const viewportPercent = viewportRatio * 96
+  const maxTop = 96 - viewportPercent
   const top = scrollRatio.value * maxTop
   
   return {
@@ -70,28 +70,38 @@ function getNodeStyle(node, index) {
       top: '0%',
       left: '4px',
       width: '20px',
-      backgroundColor: '#999',
-      opacity: 0.4
+      backgroundColor: '#888888',
+      opacity: 0.9
     }
   }
-  
+
   const actualIndex = node._originalIndex !== undefined ? node._originalIndex : index
-  const y = (actualIndex * 28 / props.totalHeight) * 100
-  const depthWidth = Math.min(node.depth * 1.5, 8)
-  
-  let bgColor = '#999'
-  if (node.type === 'object') bgColor = '#0451a5'
-  else if (node.type === 'array') bgColor = '#098658'
-  else if (node.type === 'string') bgColor = '#a31515'
-  else if (node.type === 'number') bgColor = '#098658'
-  else if (node.type === 'boolean' || node.type === 'null') bgColor = '#0000ff'
-  
+  const y = (actualIndex * 28 / props.totalHeight) * 96
+  const depthWidth = Math.min(node.depth * 3, 20)
+
+  let bgColor = '#888888'
+  let alpha = 0.9
+
+  if (node.type === 'object' || node.type === 'object_start') {
+    bgColor = '#007acc'
+    alpha = 1
+  } else if (node.type === 'array' || node.type === 'array_start') {
+    bgColor = '#4ec9b0'
+    alpha = 1
+  } else if (node.type === 'string') {
+    bgColor = '#ce9178'
+  } else if (node.type === 'number') {
+    bgColor = '#b5cea8'
+  } else if (node.type === 'boolean' || node.type === 'null') {
+    bgColor = '#569cd6'
+  }
+
   return {
-    top: `${Math.min(y, 98)}%`,
+    top: `${Math.min(y, 96)}%`,
     left: `${depthWidth}px`,
-    width: `${24 - depthWidth}px`,
+    width: `${Math.max(24 - depthWidth, 2)}px`,
     backgroundColor: bgColor,
-    opacity: 0.4
+    opacity: alpha
   }
 }
 
@@ -157,18 +167,16 @@ function stopDrag() {
 
 <style scoped>
 .minimap-wrapper {
-  width: 24px;
+  width: 80px;
   flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
   height: 100%;
 }
 
 .minimap {
   width: 100%;
-  flex: 1;
-  background: #f3f3f3;
-  border-left: 1px solid #e5e5e5;
+  height: 100%;
+  background: var(--bg-primary);
+  border-left: 1px solid var(--border);
   position: relative;
   cursor: pointer;
   overflow: hidden;
@@ -180,7 +188,8 @@ function stopDrag() {
   top: 0;
   left: 0;
   right: 0;
-  bottom: 24px;
+  bottom: 0;
+  height: 100%;
 }
 
 .minimap-node {

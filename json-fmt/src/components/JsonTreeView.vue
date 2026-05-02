@@ -1,6 +1,10 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import Minimap from './Minimap.vue';
+import FolderIcon from './icons/FolderIcon.vue';
+import JsonIcon from './icons/JsonIcon.vue';
+import SearchIcon from './icons/SearchIcon.vue';
+import CloseIcon from './icons/CloseIcon.vue';
 
 const props = defineProps({
   visibleNodes: {
@@ -33,7 +37,8 @@ const emit = defineEmits([
   'copyValue',
   'search',
   'searchNext',
-  'searchPrev'
+  'searchPrev',
+  'pasteContent'
 ]);
 
 const containerRef = ref(null);
@@ -105,6 +110,17 @@ function handleContextMenu(node, e) {
   emit('copyPath', node);
 }
 
+async function handlePaste() {
+  try {
+    const text = await navigator.clipboard.readText();
+    if (text) {
+      emit('pasteContent', text);
+    }
+  } catch (err) {
+    console.error('Failed to read clipboard');
+  }
+}
+
 function handleKeydown(e) {
   if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
     e.preventDefault();
@@ -129,30 +145,51 @@ defineExpose({
 
 <template>
   <div class="json-tree-view">
-    <div class="search-bar">
-      <div class="search-wrapper">
-        <input
-          ref="searchInputRef"
-          type="text"
-          class="search-input"
-          :value="searchQuery"
-          @input="e => emit('search', e.target.value)"
-          placeholder="搜索..."
-        />
-        <span v-if="searchQuery" class="search-clear" @click="emit('search', '')">×</span>
-      </div>
-      <div v-if="matchCount > 0" class="search-count">
-        {{ matchCount }}
-      </div>
+    <div class="search-box">
+      <SearchIcon :size="14" class="search-icon" />
+      <input
+        ref="searchInputRef"
+        type="text"
+        placeholder="搜索 JSON..."
+        :value="searchQuery"
+        @input="e => emit('search', e.target.value)"
+      />
+      <span class="search-shortcut" v-if="!searchQuery">Ctrl+F</span>
+      <button class="search-clear" v-if="searchQuery" @click="emit('search', '')">
+        <CloseIcon :size="12" />
+      </button>
     </div>
 
     <div class="tree-content">
-      <div v-if="!currentFile" class="empty-state">
-        <div class="empty-text">未加载 JSON</div>
-        <div class="empty-hint">打开文件以进行可视化</div>
-        <button class="open-btn" @click="$emit('openFiles')">
-          打开文件
-        </button>
+      <div v-if="!currentFile" class="empty-main">
+        <div class="empty-decoration">
+          <div class="grid-pattern"></div>
+        </div>
+        <div class="empty-content">
+          <div class="empty-logo">
+            <JsonIcon :size="64" />
+          </div>
+          <h2 class="empty-title">未加载 JSON</h2>
+          <p class="empty-desc">打开文件以进行可视化</p>
+          <div class="empty-actions">
+            <button class="btn-primary" @click="$emit('openFiles')">
+              <FolderIcon :size="16" />
+              <span>打开文件</span>
+            </button>
+            <button class="btn-secondary" @click="handlePaste">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/>
+                <rect x="8" y="2" width="8" height="4" rx="1"/>
+              </svg>
+              <span>粘贴内容</span>
+            </button>
+          </div>
+          <div class="empty-shortcuts">
+            <span class="shortcut">Ctrl+O</span>
+            <span class="shortcut">Ctrl+V</span>
+            <span class="shortcut">Ctrl+S</span>
+          </div>
+        </div>
       </div>
 
       <div v-else-if="parseStatus === 'parsing'" class="parsing-status">
@@ -249,51 +286,70 @@ defineExpose({
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: var(--editor-bg);
+  background: var(--bg-primary);
   overflow: hidden;
 }
 
-.search-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 16px;
-  background: var(--sidebar-bg);
-  border-bottom: 1px solid var(--border);
-}
-
-.search-wrapper {
-  flex: 1;
+.search-box {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 0 12px;
+  height: 36px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin: 8px 12px;
 }
 
-.search-input {
+.search-box:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-light);
+}
+
+.search-icon {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.search-box input {
   flex: 1;
-  background: transparent;
   border: none;
-  color: var(--text);
-  padding: 4px 0;
+  background: transparent;
   font-size: 13px;
-  font-family: var(--font-ui);
+  color: var(--text-primary);
   outline: none;
 }
 
-.search-input::placeholder {
+.search-box input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.search-shortcut {
+  font-size: 11px;
+  padding: 2px 6px;
+  background: var(--bg-hover);
+  border-radius: 4px;
   color: var(--text-secondary);
+  font-family: monospace;
 }
 
 .search-clear {
-  font-size: 14px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
   color: var(--text-secondary);
+  border-radius: 3px;
   cursor: pointer;
-  padding: 2px 4px;
-  transition: color var(--transition-fast);
 }
 
 .search-clear:hover {
-  color: var(--text);
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .search-count {
@@ -309,40 +365,119 @@ defineExpose({
   flex-direction: column;
 }
 
-.empty-state {
+.empty-main {
   flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.empty-decoration {
+  position: absolute;
+  inset: 0;
+  opacity: 0.015;
+}
+
+.grid-pattern {
+  width: 100%;
+  height: 100%;
+  background-image:
+    linear-gradient(to right, #000 1px, transparent 1px),
+    linear-gradient(to bottom, #000 1px, transparent 1px);
+  background-size: 60px 60px;
+}
+
+.empty-content {
   display: flex;
   flex-direction: column;
   align-items: center;
+  text-align: center;
+  z-index: 1;
+}
+
+.empty-logo {
+  width: 80px;
+  height: 80px;
+  display: flex;
+  align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 40px;
-}
-
-.empty-text {
-  font-size: 14px;
-  color: var(--text);
-}
-
-.empty-hint {
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-
-.open-btn {
-  margin-top: 16px;
-  padding: 8px 20px;
-  background: transparent;
-  border: none;
+  background: var(--bg-hover);
+  border-radius: 16px;
+  margin-bottom: 24px;
   color: var(--accent);
-  font-size: 13px;
-  font-family: var(--font-ui);
-  cursor: pointer;
-  transition: opacity var(--transition-fast);
 }
 
-.open-btn:hover {
-  opacity: 0.7;
+.empty-title {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.empty-desc {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-bottom: 24px;
+}
+
+.empty-actions {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.btn-primary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: var(--accent);
+  color: var(--bg-primary);
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 150ms;
+}
+
+.btn-primary:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.empty-shortcuts {
+  display: flex;
+  gap: 16px;
+}
+
+.shortcut {
+  padding: 2px 6px;
+  background: var(--bg-hover);
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.btn-secondary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 150ms;
+}
+
+.btn-secondary:hover {
+  background: var(--bg-hover);
+  border-color: var(--text-secondary);
 }
 
 .parsing-status {
@@ -382,7 +517,7 @@ defineExpose({
 }
 
 .error-message {
-  background: var(--sidebar-bg);
+  background: var(--bg-secondary);
   padding: 16px;
   border-radius: 4px;
   font-size: 12px;
@@ -420,23 +555,35 @@ defineExpose({
 }
 
 .tree-node {
-  height: var(--line-height);
   display: flex;
   align-items: center;
-  font-family: var(--font-code);
+  height: 22px;
+  padding: 0 8px;
   font-size: 13px;
-  cursor: default;
-  transition: background var(--transition-fast);
-  white-space: nowrap;
-  position: relative;
+  font-family: 'Consolas', 'Monaco', monospace;
+  cursor: pointer;
 }
 
 .tree-node:hover {
-  background: var(--hover-bg);
+  background: var(--bg-hover);
+}
+
+.tree-node.active,
+.tree-node:focus {
+  background: var(--bg-active);
+  outline: none;
+}
+
+[data-theme="dark"] .tree-node:hover {
+  background: #2a2d2e;
+}
+
+[data-theme="dark"] .tree-node.active {
+  background: #37373d;
 }
 
 .tree-node.is-highlighted {
-  background: var(--active-bg);
+  background: var(--bg-active);
 }
 
 .tree-node.is-root {
