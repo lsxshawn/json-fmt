@@ -1,54 +1,4 @@
 :root {
-  /* 深色主题（默认）*/
-  --bg-primary: #0d0d15;
-  --bg-secondary: #111118;
-  --bg-tertiary: #0d0d15;
-  --bg-hover: #1e1e2e;
-  --bg-active: #1e1e2e;
-  --bg-input: #111118;
-  --border: #1e1e2e;
-  --border-light: #2a2a3a;
-  --divider: #1e1e2e;
-  --text-primary: #d4c5a9;
-  --text-secondary: #5a5a6e;
-  --text-tertiary: #3a3a4e;
-  --text-disabled: #3a3a4e;
-  --accent: #c8b88a;
-  --accent-hover: #d4c5a9;
-  --accent-light: rgba(200, 184, 138, 0.15);
-  --success: #89d185;
-  --warning: #f9ab00;
-  --error: #f44747;
-
-  --json-key: #c8b88a;
-  --json-string: #89d185;
-  --json-number: #b5cea8;
-  --json-boolean: #569cd6;
-  --json-null: #569cd6;
-  --json-bracket: #5a5a6e;
-
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 1px 3px rgba(0, 0, 0, 0.4);
-
-  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-code: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
-  --font-size-ui: 13px;
-  --font-size-small: 11px;
-
-  --sidebar-width: 220px;
-  --statusbar-height: 24px;
-  --titlebar-height: 40px;
-  --tab-height: 36px;
-
-  --line-height: 28px;
-  --indent-width: 20px;
-  --spacing: 8px;
-  --transition-fast: 150ms ease;
-
-  color-scheme: dark;
-}
-
-[data-theme="light"] {
   --bg-primary: #ffffff;
   --bg-secondary: #f8f9fa;
   --bg-tertiary: #f1f3f4;
@@ -78,6 +28,21 @@
 
   --shadow-sm: 0 1px 2px rgba(60, 64, 67, 0.08);
   --shadow-md: 0 1px 3px rgba(60, 64, 67, 0.12);
+
+  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-code: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
+  --font-size-ui: 13px;
+  --font-size-small: 11px;
+
+  --sidebar-width: 220px;
+  --statusbar-height: 24px;
+  --titlebar-height: 40px;
+  --tab-height: 36px;
+
+  --line-height: 28px;
+  --indent-width: 20px;
+  --spacing: 8px;
+  --transition-fast: 150ms ease;
 
   color-scheme: light;
 }
@@ -285,10 +250,3 @@ html, body {
   opacity: 0.9;
 }
 
-[data-theme="dark"] .btn-primary {
-  color: #0d0d15;
-}
-
-[data-theme="light"] .btn-primary {
-  color: #fafafa;
-}

@@ -306,16 +306,7 @@ defineExpose({
         </div>
       </div>
 
-      <!-- ============================================ -->
-      <!-- 重要：解析状态优先显示，确保整个内容区域在解析时显示加载状态 -->
-      <!--       直到解析完成才显示内容 -->
-      <!-- ============================================ -->
-      <div v-if="parseStatus === 'parsing'" class="parsing-status">
-        <span class="spinner">⟳</span>
-        <span>解析中...</span>
-      </div>
-
-      <div v-else-if="errorMessage" class="error-state">
+      <div v-if="errorMessage" class="error-state">
         <p class="error-title">解析错误</p>
         <pre class="error-message">{{ errorMessage }}</pre>
       </div>
@@ -643,22 +634,6 @@ defineExpose({
   border-color: var(--text-secondary);
 }
 
-.parsing-status {
-  flex: 1;
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-
-.spinner {
-  animation: spin 1s linear infinite;
-  font-size: 16px;
-}
-
 @keyframes spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
@@ -737,14 +712,6 @@ defineExpose({
   outline: none;
 }
 
-[data-theme="dark"] .tree-node:hover {
-  background: #2a2d2e;
-}
-
-[data-theme="dark"] .tree-node.active {
-  background: #37373d;
-}
-
 .tree-node.is-highlighted {
   background: var(--bg-active);
 }
@@ -758,11 +725,6 @@ defineExpose({
   color: #000;
   border-radius: 2px;
   padding: 0 2px;
-}
-
-[data-theme="dark"] .search-match {
-  background: #a16207;
-  color: #fff;
 }
 
 .toggle-btn {

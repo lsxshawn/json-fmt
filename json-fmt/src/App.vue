@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, shallowRef, markRaw } from 'vue';
+import { ref, computed, onMounted, onUnmounted, shallowRef, markRaw, watch } from 'vue';
 import '@/assets/vscode.css';
 import SideBar from '@/components/SideBar.vue';
 import EditorTabs from '@/components/EditorTabs.vue';
@@ -7,6 +7,7 @@ import JsonTreeView from '@/components/JsonTreeView.vue';
 import StatusBar from '@/components/StatusBar.vue';
 import DetailPanel from '@/components/DetailPanel.vue';
 import CommandPalette from '@/components/CommandPalette.vue';
+import SkeletonLoader from '@/components/SkeletonLoader.vue';
 import LogoIcon from '@/components/icons/LogoIcon.vue';
 import FormatIcon from '@/components/icons/FormatIcon.vue';
 import CompressIcon from '@/components/icons/CompressIcon.vue';
@@ -14,6 +15,9 @@ import EscapeIcon from '@/components/icons/EscapeIcon.vue';
 import ThemeIcon from '@/components/icons/ThemeIcon.vue';
 import MoreIcon from '@/components/icons/MoreIcon.vue';
 import SaveIcon from '@/components/icons/SaveIcon.vue';
+import { StreamingValidator, MemoryIndex, SearchController, ErrorHandler } from '@/core/index.js';
+import ParseProgress from '@/components/ParseProgress.vue';
+import ConsolePanel from '@/components/ConsolePanel.vue';
 
 const SAMPLE_JSON = {
   name: 'JSON Pro',
@@ -41,6 +45,161 @@ const SAMPLE_JSON = {
     { id: 3, name: 'Third', value: 300 }
   ]
 };
+
+const files = ref([]);
+const currentFileId = ref(null);
+const jsonTree = shallowRef(null);
+const visibleNodes = shallowRef([]);
+const totalNodes = ref(0);
+const parseStatus = ref('');
+const errorMessage = ref('');
+const warningMessage = ref('');
+const fileSize = ref(0);
+const parseTime = ref(0);
+const isEscaped = ref(false);
+const isUsingWorker = ref(true);
+// ============================================
+// 重要：防止在Worker处理过程中切换文件导致崩溃
+// ============================================
+const isParsing = ref(false);
+
+const parsingPhase = ref('');
+const parsingProgress = ref(0);
+const currentFileText = ref('');
+const isLargeFileMode = ref(false);
+
+const currentStep = ref('');
+const parseProgress = ref(0);
+const showConsole = ref(false);
+const selectedNode = ref(null);
+const activeConsoleTab = ref('logs');
+const parseSteps = ref([
+  { id: 'read', message: '读取文件', detail: '', done: false, active: false, startTime: 0, endTime: 0, duration: 0 },
+  { id: 'validate', message: '流式校验', detail: '检查括号匹配...', done: false, active: false, startTime: 0, endTime: 0, duration: 0 },
+  { id: 'index', message: '构建索引', detail: '扫描键名和结构...', done: false, active: false, startTime: 0, endTime: 0, duration: 0 },
+  { id: 'render', message: '渲染可见区', detail: '格式化前30行...', done: false, active: false, startTime: 0, endTime: 0, duration: 0 },
+  { id: 'background', message: '后台格式化', detail: '处理剩余区域...', done: false, active: false, startTime: 0, endTime: 0, duration: 0 }
+]);
+
+const backgroundProgress = ref(0);
+let autoCollapseTimer = null;
+
+let streamingValidator = null;
+let memoryIndex = null;
+let searchController = null;
+let errorHandler = null;
+
+const showDetailPanel = ref(false);
+const searchQuery = ref('');
+const isDragging = ref(false);
+const cursorPosition = ref({ line: 1, column: 1 });
+
+const showCommandPalette = ref(false);
+const isTextMode = ref(false);
+const textContent = ref('');
+const fileInputRef = ref(null);
+
+function resetParseSteps() {
+  parseSteps.value = [
+    { id: 'read', message: '读取文件', detail: '', done: false, active: false, startTime: 0, endTime: 0, duration: 0 },
+    { id: 'validate', message: '流式校验', detail: '检查括号匹配...', done: false, active: false, startTime: 0, endTime: 0, duration: 0 },
+    { id: 'index', message: '构建索引', detail: '扫描键名和结构...', done: false, active: false, startTime: 0, endTime: 0, duration: 0 },
+    { id: 'render', message: '渲染可见区', detail: '格式化前30行...', done: false, active: false, startTime: 0, endTime: 0, duration: 0 },
+    { id: 'background', message: '后台格式化', detail: '处理剩余区域...', done: false, active: false, startTime: 0, endTime: 0, duration: 0 }
+  ];
+  parseProgress.value = 0;
+  currentStep.value = '';
+  backgroundProgress.value = 0;
+}
+
+function startParseStep(stepId) {
+  const step = parseSteps.value.find(s => s.id === stepId);
+  if (step) {
+    parseSteps.value.forEach(s => s.active = false);
+    step.active = true;
+    step.startTime = performance.now();
+    currentStep.value = step.message;
+    showConsole.value = true;
+    if (autoCollapseTimer) {
+      clearTimeout(autoCollapseTimer);
+      autoCollapseTimer = null;
+    }
+  }
+}
+
+function completeParseStep(stepId, detail = '') {
+  const step = parseSteps.value.find(s => s.id === stepId);
+  if (step) {
+    step.active = false;
+    step.done = true;
+    step.endTime = performance.now();
+    step.duration = Math.round(step.endTime - step.startTime);
+    step.detail = detail;
+    
+    const stepIndex = parseSteps.value.findIndex(s => s.id === stepId);
+    parseProgress.value = ((stepIndex + 1) / parseSteps.value.length) * 100;
+    
+    const allDone = parseSteps.value.every(s => s.done);
+    if (allDone) {
+      autoCollapseTimer = setTimeout(() => {
+        showConsole.value = false;
+      }, 3000);
+    }
+  }
+}
+
+function copyLog() {
+  const log = parseSteps.value.map(s => {
+    const time = s.endTime ? new Date(s.endTime).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+    const status = s.error ? '✗' : s.done ? '✓' : s.active ? '...' : '-';
+    const duration = s.done ? `(${s.duration}ms)` : '';
+    return `${time} ${status} ${s.message} ${duration} ${s.detail || ''}`;
+  }).join('\n');
+  navigator.clipboard.writeText(log);
+}
+
+function runInBackground() {
+  showConsole.value = false;
+}
+
+function clearLog() {
+  resetParseSteps();
+}
+
+function updateParseStep(stepId, detail = '', done = false) {
+  const step = parseSteps.value.find(s => s.id === stepId);
+  if (step) {
+    parseSteps.value.forEach(s => s.active = false);
+    step.active = !done;
+    step.done = done;
+    step.detail = detail;
+    step.time = new Date().toISOString();
+    currentStep.value = step.message;
+    
+    const stepIndex = parseSteps.value.findIndex(s => s.id === stepId);
+    parseProgress.value = ((stepIndex + (done ? 1 : 0)) / parseSteps.value.length) * 100;
+  }
+}
+
+const filteredVisibleNodes = computed(() => {
+  if (!searchQuery.value) return visibleNodes.value;
+  const query = searchQuery.value.toLowerCase();
+  return visibleNodes.value.filter(node => {
+    if (!node || !node.k) return false;
+    return node.k.toLowerCase().includes(query);
+  });
+});
+
+const searchMatchIndex = ref(-1);
+const searchMatchCount = ref(0);
+
+const currentFile = computed(() => {
+  return files.value.find(f => f.id === currentFileId.value);
+});
+
+const parseCache = new Map();
+let worker = null;
+let pendingParseTask = null;
 
 const workerCode = `
 let rawData = '';
@@ -104,188 +263,379 @@ function createNode(key, value, parentPath = '') {
     }
     return result.join('.');
   })();
-  
-  const node = {
+
+  const type = typeof value;
+  let node = {
     id,
-    key,
-    path: [...path],
-    pathStr: path.length > 0 ? displayPath : 'root',
-    collapsed: !isRoot && path.length < 2,
-    isRoot
+    k: key,
+    v: value,
+    type,
+    path: path.slice(),
+    displayPath,
+    depth: path.length,
+    isRoot,
+    collapsed: false,
+    children: []
   };
 
-  if (value === null) {
-    node.type = 'null';
-    node.displayValue = 'null';
-  } else if (typeof value === 'boolean') {
-    node.type = 'boolean';
-    node.displayValue = String(value);
-  } else if (typeof value === 'number') {
-    node.type = 'number';
-    node.displayValue = String(value);
-  } else if (typeof value === 'string') {
-    node.type = 'string';
-    node.displayValue = value.length > 200 ? value.substring(0, 200) + '...' : value;
-    node.fullValue = value;
-  } else if (Array.isArray(value)) {
-    node.type = 'array';
-    node.children = [];
-    node.childCount = value.length;
-    node._rawValue = value;
-    node._isLazy = true;
-    node._maxChildren = 1000;
-  } else if (typeof value === 'object') {
-    node.type = 'object';
-    node.children = [];
-    node.childCount = Object.keys(value).length;
-    node._rawValue = value;
-    node._isLazy = true;
-    node._maxChildren = 1000;
+  if (type === 'object' && value !== null) {
+    if (Array.isArray(value)) {
+      node._isLazy = true;
+      node._rawValue = value;
+      node._maxChildren = 100;
+      node.type = 'array';
+    } else {
+      node._isLazy = true;
+      node._rawValue = value;
+      node._maxChildren = 100;
+      node.type = 'object';
+    }
   } else {
-    node.type = 'unknown';
-    node.displayValue = String(value);
+    node.type = type;
+    node.value = value;
   }
 
   return node;
 }
 
-function flattenTree(node, visibleNodes = [], depth = 0) {
-  if (!node) return visibleNodes;
-  
-  if (!node.collapsed) {
-    ensureChildren(node);
+function getDisplayValue(node) {
+  if (typeof node.v === 'string') {
+    return node.v.length > 200 ? node.v.substring(0, 200) + '...' : node.v;
   }
-  const nodeCopy = {
-    id: node.id,
-    key: node.key,
-    type: node.type,
-    displayValue: node.displayValue,
-    collapsed: node.collapsed,
-    childCount: node.childCount,
-    depth: depth
-  };
-  visibleNodes.push(nodeCopy);
-  if (!node.collapsed && node.children) {
-    for (const child of node.children) {
-      if (child) {
-        flattenTree(child, visibleNodes, depth + 1);
+  if (node.v === null) {
+    return 'null';
+  }
+  if (typeof node.v === 'boolean') {
+    return String(node.v);
+  }
+  if (typeof node.v === 'number') {
+    return String(node.v);
+  }
+  if (node.type === 'array') {
+    const len = node._rawValue ? (Array.isArray(node._rawValue) ? node._rawValue.length : 0) : 0;
+    return 'Array(' + len + ')';
+  }
+  if (node.type === 'object') {
+    const raw = node._rawValue;
+    const len = raw && typeof raw === 'object' ? Object.keys(raw).length : 0;
+    return 'Object(' + len + ')';
+  }
+  return String(node.v);
+}
+
+function flattenTree(root) {
+  if (!root) return [];
+  
+  const result = [];
+  const stack = [root];
+  
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node) continue;
+    
+    const raw = node._rawValue;
+    const childCount = raw ? (Array.isArray(raw) ? raw.length : (typeof raw === 'object' ? Object.keys(raw).length : 0)) : 0;
+    const displayValue = getDisplayValue(node);
+    
+    if (!node.collapsed) {
+      result.push({
+        id: node.id,
+        key: node.k,
+        type: node.type,
+        path: node.path,
+        displayPath: node.displayPath,
+        depth: node.depth,
+        isRoot: node.isRoot,
+        collapsed: node.collapsed,
+        hasChildren: node.children && node.children.length > 0,
+        displayValue: displayValue,
+        fullValue: typeof node.v === 'string' ? node.v : undefined,
+        childCount: childCount
+      });
+      
+      if (node.children && node.children.length > 0) {
+        for (let i = node.children.length - 1; i >= 0; i--) {
+          stack.push(node.children[i]);
+        }
       }
+    } else {
+      result.push({
+        id: node.id,
+        key: node.k,
+        type: node.type,
+        path: node.path,
+        displayPath: node.displayPath,
+        depth: node.depth,
+        isRoot: node.isRoot,
+        collapsed: node.collapsed,
+        hasChildren: true,
+        displayValue: displayValue,
+        fullValue: typeof node.v === 'string' ? node.v : undefined,
+        childCount: childCount
+      });
     }
   }
-  return visibleNodes;
-}
-
-// ============================================
-// 重要：大文件永远都是展开所有节点
-//       MAX_WORKER_NODES 设置为更大的值，确保所有节点都能显示
-// ============================================
-const MAX_WORKER_NODES = 1000000;
-const MAX_WORKER_TOTAL = 5000000;
-
-function estimateNodeCount(obj, count = 0) {
-  if (count > MAX_WORKER_TOTAL * 2) return count;
-  if (obj === null || typeof obj !== 'object') return count + 1;
-  count++;
-  if (Array.isArray(obj)) {
-    for (const item of obj) {
-      count = estimateNodeCount(item, count);
-      if (count > MAX_WORKER_TOTAL * 2) break;
-    }
-  } else {
-    for (const key of Object.keys(obj)) {
-      count = estimateNodeCount(obj[key], count);
-      if (count > MAX_WORKER_TOTAL * 2) break;
-    }
-  }
-  return count;
-}
-
-function parseJSON(text) {
-  nodeIdCounter = 0;
   
-  const data = JSON.parse(text);
-  
-  const estimatedTotal = estimateNodeCount(data);
-  if (estimatedTotal > MAX_WORKER_TOTAL) {
-    throw new Error('文件过大，包含约 ' + estimatedTotal.toLocaleString() + ' 个节点，超过支持的最大节点数 ' + MAX_WORKER_TOTAL.toLocaleString());
-  }
-  
-  parsedTree = createNode(undefined, data);
-  const visibleNodes = flattenTree(parsedTree);
-  
-  if (visibleNodes.length > MAX_WORKER_NODES) {
-    return {
-      visibleNodes: visibleNodes.slice(0, MAX_WORKER_NODES),
-      totalNodes: countNodes(parsedTree),
-      truncated: true
-    };
-  }
-  
-  return {
-    visibleNodes,
-    totalNodes: countNodes(parsedTree)
-  };
-}
-
-function countNodes(node) {
-  if (!node) return 0;
-  
-  let count = 1;
-  if (node._isLazy && node._rawValue) {
-    if (Array.isArray(node._rawValue)) {
-      count += node._rawValue.length;
-    } else if (typeof node._rawValue === 'object') {
-      count += Object.keys(node._rawValue).length;
-    }
-  } else if (node.children) {
-    for (const child of node.children) {
-      count += countNodes(child);
-    }
-  }
-  return count;
-}
-
-function toggleNode(nodeId) {
-  function toggle(n) {
-    if (n.id === nodeId) {
-      n.collapsed = !n.collapsed;
-      if (!n.collapsed) {
-        ensureChildren(n);
-      }
-      return true;
-    }
-    if (n._isLazy) {
-      ensureChildren(n);
-    }
-    if (n.children) {
-      for (const child of n.children) {
-        if (toggle(child)) return true;
-      }
-    }
-    return false;
-  }
-  toggle(parsedTree);
-  const result = {
-    visibleNodes: flattenTree(parsedTree),
-    totalNodes: countNodes(parsedTree)
-  };
-  parsedTree._rawValue = null;
   return result;
 }
 
-function expandAll(node = parsedTree) {
-  if (!node) return;
-  node.collapsed = false;
-  const originalMaxChildren = node._maxChildren;
-  node._maxChildren = Infinity;
-  ensureChildren(node);
-  node._maxChildren = originalMaxChildren;
-  if (node.children) node.children.forEach(expandAll);
+function countNodes(root) {
+  if (!root) return 0;
+  
+  let count = 0;
+  const stack = [root];
+  
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node) continue;
+    
+    count++;
+    
+    if (node._isLazy && node._rawValue) {
+      if (Array.isArray(node._rawValue)) {
+        count += node._rawValue.length;
+      } else if (typeof node._rawValue === 'object') {
+        count += Object.keys(node._rawValue).length;
+      }
+    }
+    
+    if (node.children && node.children.length > 0) {
+      for (let i = node.children.length - 1; i >= 0; i--) {
+        stack.push(node.children[i]);
+      }
+    }
+  }
+  
+  return count;
 }
 
-function collapseAll(node = parsedTree) {
-  node.collapsed = true;
-  if (node.children) node.children.forEach(collapseAll);
+function expandAll() {
+  if (!parsedTree) return;
+  
+  const stack = [parsedTree];
+  
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node) continue;
+    
+    node.collapsed = false;
+    const originalMaxChildren = node._maxChildren;
+    node._maxChildren = Infinity;
+    ensureChildren(node);
+    node._maxChildren = originalMaxChildren;
+    
+    if (node.children && node.children.length > 0) {
+      for (let i = node.children.length - 1; i >= 0; i--) {
+        stack.push(node.children[i]);
+      }
+    }
+  }
+}
+
+function collapseAll() {
+  if (!parsedTree) return;
+  
+  const stack = [parsedTree];
+  
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node) continue;
+    
+    node.collapsed = true;
+    
+    if (node.children && node.children.length > 0) {
+      for (let i = node.children.length - 1; i >= 0; i--) {
+        stack.push(node.children[i]);
+      }
+    }
+  }
+}
+
+function toggleNode(nodeId) {
+  if (!parsedTree) return { visibleNodes: [], totalNodes: 0 };
+  
+  const stack = [parsedTree];
+  
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node) continue;
+    
+    if (node.id === nodeId) {
+      node.collapsed = !node.collapsed;
+      if (!node.collapsed) {
+        const originalMaxChildren = node._maxChildren;
+        node._maxChildren = Infinity;
+        ensureChildren(node);
+        node._maxChildren = originalMaxChildren;
+      }
+      break;
+    }
+    
+    if (node.children && node.children.length > 0) {
+      for (let i = node.children.length - 1; i >= 0; i--) {
+        stack.push(node.children[i]);
+      }
+    }
+  }
+  
+  const visibleNodes = flattenTree(parsedTree);
+  return { visibleNodes, totalNodes: visibleNodes.length };
+}
+
+function estimateNodeCount(obj) {
+  let count = 0;
+  const stack = [obj];
+  
+  while (stack.length > 0 && count <= MAX_WORKER_TOTAL * 2) {
+    const current = stack.pop();
+    if (current === null || typeof current !== 'object') {
+      count++;
+      continue;
+    }
+    
+    count++;
+    
+    if (Array.isArray(current)) {
+      for (let i = current.length - 1; i >= 0; i--) {
+        stack.push(current[i]);
+      }
+    } else {
+      const keys = Object.keys(current);
+      for (let i = keys.length - 1; i >= 0; i--) {
+        stack.push(current[keys[i]]);
+      }
+    }
+  }
+  
+  return count;
+}
+
+const MAX_WORKER_TOTAL = 5000000;
+
+function parseJSONToFlatArray(text) {
+  try {
+    const data = JSON.parse(text);
+    
+    const result = [];
+    let idCounter = 0;
+    
+    const stack = [{ 
+      value: data, 
+      key: undefined, 
+      depth: 0, 
+      path: [],
+      isRoot: true 
+    }];
+    
+    while (stack.length > 0 && result.length < MAX_WORKER_TOTAL) {
+      const item = stack.pop();
+      const { value, key, depth, path, isRoot } = item;
+      
+      idCounter++;
+      
+      let type, displayValue, fullValue, childCount = 0;
+      
+      if (value === null) {
+        type = 'null';
+        displayValue = 'null';
+      } else if (typeof value === 'boolean') {
+        type = 'boolean';
+        displayValue = String(value);
+      } else if (typeof value === 'number') {
+        type = 'number';
+        displayValue = String(value);
+      } else if (typeof value === 'string') {
+        type = 'string';
+        fullValue = undefined;
+        displayValue = value.length > 200 ? value.substring(0, 200) + '...' : value;
+      } else if (Array.isArray(value)) {
+        type = 'array';
+        childCount = value.length;
+        displayValue = 'Array(' + value.length + ')';
+        
+        for (let i = value.length - 1; i >= 0; i--) {
+          if (result.length >= MAX_WORKER_TOTAL) break;
+          const newPath = [...path, '[' + i + ']'];
+          stack.push({
+            value: value[i],
+            key: '[' + i + ']',
+            depth: depth + 1,
+            path: newPath,
+            isRoot: false
+          });
+        }
+      } else if (typeof value === 'object') {
+        type = 'object';
+        const keys = Object.keys(value);
+        childCount = keys.length;
+        displayValue = 'Object(' + keys.length + ')';
+        
+        for (let i = keys.length - 1; i >= 0; i--) {
+          if (result.length >= MAX_WORKER_TOTAL) break;
+          const k = keys[i];
+          const newPath = [...path, k];
+          stack.push({
+            value: value[k],
+            key: k,
+            depth: depth + 1,
+            path: newPath,
+            isRoot: false
+          });
+        }
+      } else {
+        type = 'unknown';
+        displayValue = String(value);
+      }
+      
+      const displayPath = path.length > 0 ? path.join('.') : '';
+      
+      result.push({
+        id: idCounter,
+        key: key,
+        type: type,
+        path: path,
+        displayPath: displayPath,
+        depth: depth,
+        isRoot: isRoot,
+        collapsed: false,
+        hasChildren: childCount > 0,
+        displayValue: displayValue,
+        fullValue: fullValue,
+        childCount: childCount
+      });
+    }
+    
+    return {
+      nodes: result,
+      truncated: result.length >= MAX_WORKER_TOTAL,
+      total: result.length
+    };
+    
+  } catch (err) {
+    throw new Error('解析失败: ' + err.message);
+  }
+}
+
+function parseAndExpandAllFast(text) {
+  try {
+    self.postMessage({ type: 'parseStart' });
+    
+    const startTime = performance.now();
+    
+    const result = parseJSONToFlatArray(text);
+    const parseTime = performance.now() - startTime;
+    
+    self.postMessage({
+      type: 'parsed',
+      visibleNodes: result.nodes,
+      totalNodes: result.total,
+      parseTime: parseTime,
+      truncated: result.truncated
+    });
+    
+  } catch (err) {
+    self.postMessage({ type: 'error', message: err.message });
+  }
 }
 
 self.onmessage = function(e) {
@@ -295,386 +645,78 @@ self.onmessage = function(e) {
     case 'parse':
       try {
         const startTime = performance.now();
-        const result = parseJSON(data);
+        const dataObj = JSON.parse(data);
+        
+        let idCounter = 0;
+        const stack = [{ value: dataObj, key: undefined }];
+        
+        while (stack.length > 0) {
+          const item = stack.pop();
+          idCounter++;
+          
+          if (typeof item.value === 'object' && item.value !== null) {
+            if (Array.isArray(item.value)) {
+              for (let i = item.value.length - 1; i >= 0; i--) {
+                stack.push({ value: item.value[i], key: '[' + i + ']' });
+              }
+            } else {
+              for (const key of Object.keys(item.value)) {
+                stack.push({ value: item.value[key], key: key });
+              }
+            }
+          }
+        }
+        
         const parseTime = performance.now() - startTime;
-        self.postMessage({ type: 'parsed', ...result, parseTime });
+        
+        self.postMessage({ 
+          type: 'parsed', 
+          estimatedTotal: idCounter,
+          totalNodes: idCounter,
+          visibleNodes: [],
+          parseTime: parseTime
+        });
+        
       } catch (err) {
         self.postMessage({ type: 'error', message: err.message });
       }
       break;
     case 'parseAndExpandAll':
-      try {
-        const startTime = performance.now();
-        const result = parseJSON(data);
-        expandAll();
-        const expandedNodes = flattenTree(parsedTree);
-        // ============================================
-        // 重要：totalNodes 必须等于展开后的节点数
-        //       使用 expandedNodes.length 而不是 countNodes
-        //       确保节点数显示正确！
-        // ============================================
-        const totalCount = expandedNodes.length;
-        const parseTime = performance.now() - startTime;
-        self.postMessage({ type: 'parsed', visibleNodes: expandedNodes, totalNodes: totalCount, parseTime });
-      } catch (err) {
-        self.postMessage({ type: 'error', message: err.message });
-      }
+      parseAndExpandAllFast(data);
       break;
     case 'toggle':
-      const toggleResult = toggleNode(nodeId);
-      self.postMessage({ type: 'toggled', ...toggleResult });
       break;
     case 'expandAll':
-      expandAll();
-      self.postMessage({ type: 'updated', visibleNodes: flattenTree(parsedTree), totalNodes: countNodes(parsedTree) });
       break;
     case 'collapseAll':
-      collapseAll();
-      self.postMessage({ type: 'updated', visibleNodes: flattenTree(parsedTree), totalNodes: countNodes(parsedTree) });
       break;
   }
 };
 `;
 
-const workerUrl = URL.createObjectURL(new Blob([workerCode], { type: 'application/javascript' }));
-let worker = null;
-
-const files = ref([]);
-const currentFileId = ref(null);
-const jsonTree = shallowRef(null);
-const visibleNodes = shallowRef([]);
-const totalNodes = ref(0);
-const parseStatus = ref('');
-const errorMessage = ref('');
-const warningMessage = ref('');
-const fileSize = ref(0);
-const parseTime = ref(0);
-const isEscaped = ref(false);
-const isUsingWorker = ref(true);
-// ============================================
-// 重要：防止在Worker处理过程中切换文件导致崩溃
-// ============================================
-const isParsing = ref(false);
-const isLargeFileMode = ref(false);
-const containerRef = ref(null);
-const containerHeight = ref(600);
-const selectedNode = ref(null);
-const showDetailPanel = ref(false);
-const searchQuery = ref('');
-const isDragging = ref(false);
-const cursorPosition = ref({ line: 1, column: 1 });
-const dbName = 'JsonProCache';
-const storeName = 'files';
-const dbVersion = 1;
-let db = null;
-const showCommandPalette = ref(false);
-const currentTheme = ref('light');
-const fileInputRef = ref(null);
-const isTextMode = ref(false);
-const textContent = ref('');
-const searchMatchIndex = ref(0);
-const searchMatchCount = ref(0);
-
-const currentFile = computed(() => files.value.find(f => f.id === currentFileId.value));
-const filteredVisibleNodes = computed(() => {
-  return visibleNodes.value;
-});
-
-function getNodeMatchInfo(node) {
-  if (!searchQuery.value.trim()) {
-    return { isMatch: false };
-  }
-  const q = searchQuery.value.toLowerCase();
-  const isMatch = node.key?.toLowerCase().includes(q) ||
-    node.displayValue?.toLowerCase().includes(q) ||
-    (node.fullValue?.toLowerCase() || '').includes(q);
-  return { isMatch };
-}
-
-function updateSearchMatches() {
-  if (!searchQuery.value.trim()) {
-    searchMatchCount.value = 0;
-    searchMatchIndex.value = 0;
-    return;
-  }
-  const q = searchQuery.value.toLowerCase();
-  const matches = visibleNodes.value.filter(node =>
-    node.key?.toLowerCase().includes(q) ||
-    node.displayValue?.toLowerCase().includes(q) ||
-    (node.fullValue?.toLowerCase() || '').includes(q)
-  );
-  searchMatchCount.value = matches.length;
-  if (searchMatchIndex.value > matches.length) {
-    searchMatchIndex.value = matches.length > 0 ? 1 : 0;
-  }
-}
-
-function initDB() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(dbName, dbVersion);
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => {
-      db = request.result;
-      resolve();
-    };
-    request.onupgradeneeded = (event) => {
-      const database = event.target.result;
-      if (!database.objectStoreNames.contains(storeName)) {
-        database.createObjectStore(storeName, { keyPath: 'id', autoIncrement: true });
-      }
-    };
-  });
-}
-
-async function saveFile(fileData) {
-  if (!db) return;
-  const transaction = db.transaction(storeName, 'readwrite');
-  const store = transaction.objectStore(storeName);
-  const allFiles = await new Promise((resolve, reject) => {
-    const req = store.getAll();
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-  const totalSize = allFiles.reduce((sum, f) => sum + (f.size || 0), 0);
-  if (totalSize > 500 * 1024 * 1024) {
-    const sorted = allFiles.sort((a, b) => (a.lastOpen || 0) - (b.lastOpen || 0));
-    const toRemove = sorted.slice(0, Math.ceil(sorted.length / 2));
-    const delTransaction = db.transaction(storeName, 'readwrite');
-    const delStore = delTransaction.objectStore(storeName);
-    toRemove.forEach(f => delStore.delete(f.id));
-  }
-  const newFile = {
-    id: fileData.id,
-    name: fileData.name,
-    content: fileData.content,
-    size: fileData.size,
-    lastOpen: Date.now()
-  };
-  store.put(newFile);
-}
-
-async function loadFiles() {
-  if (!db) return [];
-  const transaction = db.transaction(storeName, 'readonly');
-  const store = transaction.objectStore(storeName);
-  return new Promise((resolve, reject) => {
-    const req = store.getAll();
-    req.onsuccess = () => {
-      const allFiles = req.result || [];
-      const validFiles = [];
-      for (const file of allFiles) {
-        try {
-          if (file && file.content && typeof file.content === 'string') {
-            if (file.size < 1024 * 1024) {
-              JSON.parse(file.content);
-            }
-            validFiles.push(file);
-          }
-        } catch (e) {
-          console.warn('Skip invalid cache file:', file?.name || 'unknown');
-        }
-      }
-      validFiles.sort((a, b) => (b.lastOpen || 0) - (a.lastOpen || 0));
-      resolve(validFiles);
-    };
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function clearCache() {
-  if (!db) return;
-  const transaction = db.transaction(storeName, 'readwrite');
-  const store = transaction.objectStore(storeName);
-  store.clear();
-  files.value = [];
-  currentFileId.value = null;
-  jsonTree.value = null;
-  visibleNodes.value = [];
-  totalNodes.value = 0;
-}
-
-async function deleteFileFromCache(fileId) {
-  if (!db) return;
-  const transaction = db.transaction(storeName, 'readwrite');
-  const store = transaction.objectStore(storeName);
-  store.delete(fileId);
-  files.value = files.value.filter(f => f.id !== fileId);
-  if (currentFileId.value === fileId) {
-    currentFileId.value = files.value.length > 0 ? files.value[0].id : null;
-    if (currentFileId.value) {
-      const file = files.value.find(f => f.id === currentFileId.value);
-      if (file) parseJSONContent(file.content, file.size);
-    } else {
-      jsonTree.value = null;
-      visibleNodes.value = [];
-      totalNodes.value = 0;
-    }
-  }
-}
-
-let syncNodeIdCounter = 0;
-
-function createNodeSync(key, value, parentPath = '') {
-  const id = ++syncNodeIdCounter;
-  const path = parentPath ? (Array.isArray(parentPath) ? parentPath : [parentPath]) : [];
-  if (key !== undefined) path.push(key);
-  
-  const isRoot = key === undefined;
-  
-  const displayPath = (function() {
-    let result = [];
-    for (let i = 0; i < path.length; i++) {
-      const p = path[i];
-      if (typeof p !== 'number') {
-        result.push(p);
-      }
-    }
-    const lastElement = path[path.length - 1];
-    if (typeof lastElement === 'number') {
-      if (result.length === 0) {
-        result.push('[' + lastElement + ']');
-      } else {
-        result[result.length - 1] += '[' + lastElement + ']';
-      }
-    }
-    return result.join('.');
-  })();
-  
-  const node = {
-    id,
-    key,
-    path: [...path],
-    pathStr: path.length > 0 ? displayPath : 'root',
-    collapsed: !isRoot && path.length < 2,
-    isRoot
-  };
-
-  if (value === null) {
-    node.type = 'null';
-    node.displayValue = 'null';
-  } else if (typeof value === 'boolean') {
-    node.type = 'boolean';
-    node.displayValue = String(value);
-  } else if (typeof value === 'number') {
-    node.type = 'number';
-    node.displayValue = String(value);
-  } else if (typeof value === 'string') {
-    node.type = 'string';
-    node.displayValue = value.length > 200 ? value.substring(0, 200) + '...' : value;
-    node.fullValue = value;
-  } else if (Array.isArray(value)) {
-    node.type = 'array';
-    node.children = [];
-    node.childCount = value.length;
-    node._rawValue = value;
-    node._isLazy = true;
-    node._maxChildren = 1000;
-  } else if (typeof value === 'object') {
-    node.type = 'object';
-    node.children = [];
-    node.childCount = Object.keys(value).length;
-    node._rawValue = value;
-    node._isLazy = true;
-    node._maxChildren = 1000;
-  } else {
-    node.type = 'unknown';
-    node.displayValue = String(value);
-  }
-
-  return node;
-}
-
-function ensureChildrenSync(node) {
-  if (!node._isLazy || !node._rawValue) return;
-  const maxChildren = node._maxChildren || Infinity;
-  if (Array.isArray(node._rawValue)) {
-    const items = node._rawValue.slice(0, maxChildren);
-    node.children = items.map((item, index) => {
-      const child = createNodeSync('[' + index + ']', item, node.path);
-      return child;
-    });
-    if (node._rawValue.length > maxChildren) {
-      node._remaining = node._rawValue.length - maxChildren;
-    }
-  } else if (typeof node._rawValue === 'object') {
-    const entries = Object.entries(node._rawValue).slice(0, maxChildren);
-    node.children = entries.map(([k, v]) => {
-      const child = createNodeSync(k, v, node.path);
-      return child;
-    });
-    if (Object.keys(node._rawValue).length > maxChildren) {
-      node._remaining = Object.keys(node._rawValue).length - maxChildren;
-    }
-  }
-  node._isLazy = false;
-  node._rawValue = null;
-}
-
-function flattenTreeSyncOptimized(node, depth = 0) {
-  const result = [];
-  if (!node) return result;
-  
-  const stack = [{ node, depth }];
-  
-  while (stack.length > 0) {
-    const { node: n, depth: d } = stack.pop();
-    
-    if (!n) continue;
-    
-    if (!n.collapsed) {
-      ensureChildrenSync(n);
-    }
-    
-    result.push(n);
-    
-    if (!n.collapsed && n.children) {
-      for (let i = n.children.length - 1; i >= 0; i--) {
-        if (n.children[i]) {
-          stack.push({ node: n.children[i], depth: d + 1 });
-        }
-      }
-    }
-  }
-  
-  return result;
-}
-
-function countNodesSync(node) {
-  let count = 1;
-  if (node._isLazy && node._rawValue) {
-    if (Array.isArray(node._rawValue)) {
-      count += node._rawValue.length;
-    } else if (typeof node._rawValue === 'object') {
-      count += Object.keys(node._rawValue).length;
-    }
-  } else if (node.children) {
-    for (const child of node.children) {
-      count += countNodesSync(child);
-    }
-  }
-  return count;
-}
-
 function getParseErrorInfo(err, content) {
-  let message = 'JSON 解析失败';
-  if (err instanceof SyntaxError) {
-    const match = err.message.match(/position (\d+)/);
-    if (match) {
-      const position = parseInt(match[1]);
-      const contextStart = Math.max(0, position - 50);
-      const contextEnd = Math.min(content.length, position + 50);
-      const context = content.substring(contextStart, contextEnd);
-      message = 'JSON 语法错误\n位置: 第 ' + position + ' 字节\n附近内容: "' + context + '"\n\n' + err.message;
-      if (content.charCodeAt(0) === 0xFEFF) {
-        message += '\n\n检测到文件开头有 BOM 字符，已尝试移除';
+  let message = err.message || '解析失败';
+  let type = 'unknown';
+  
+  if (err.message) {
+    if (err.message.includes('Unexpected')) {
+      type = 'syntax';
+      const match = err.message.match(/at position (\d+)/);
+      if (match) {
+        const pos = parseInt(match[1]);
+        const lines = content.substring(0, pos).split('\n');
+        const line = lines.length;
+        const column = lines[lines.length - 1].length + 1;
+        message = `第 ${line} 行，第 ${column} 列：${err.message}`;
       }
-    } else {
-      message = 'JSON 语法错误: ' + err.message;
+    } else if (err.message.includes('maximum')) {
+      type = 'size';
+    } else if (err.message.includes('out of memory')) {
+      type = 'memory';
     }
-  } else {
-    message = '解析失败: ' + err.message;
   }
-  return { message, type: 'syntax' };
+  
+  return { message, type };
 }
 
 const MAX_TOTAL_NODES = 10000000;
@@ -733,35 +775,54 @@ function parseAndCreateOptimized(content) {
         dv: len > 200 ? v.substring(0, 200) + '...' : v,
         fv: v, d, r, c: false, children: [] 
       };
-    } else if (Array.isArray(v)) {
-      const childCount = v.length;
-      const isCollapsed = false;
-      node = { id, k, type: 4, cc: childCount, rv: v, il: true, d, r, c: isCollapsed, children: [] };
-      
-      if (!isCollapsed && childCount > 0) {
-        for (let i = childCount - 1; i >= 0; i--) {
-          treeStack.push({ v: v[i], k: i, d: d + 1, r: false, p: node });
-        }
-      }
     } else if (t === 'object') {
-      const keys = Object.keys(v);
-      const childCount = keys.length;
-      const isCollapsed = false;
-      node = { id, k, type: 5, cc: childCount, rv: v, il: true, d, r, c: isCollapsed, children: [] };
+      if (Array.isArray(v)) {
+        node = { 
+          id, k, type: 4, 
+          dv: `Array(${v.length})`, 
+          d, r, c: false, 
+          children: [],
+          _raw: v,
+          _len: v.length,
+          _isArray: true
+        };
+      } else {
+        const keys = Object.keys(v);
+        node = { 
+          id, k, type: 5, 
+          dv: `Object(${keys.length})`, 
+          d, r, c: false, 
+          children: [],
+          _raw: v,
+          _keys: keys,
+          _isArray: false
+        };
+      }
       
-      if (!isCollapsed && childCount > 0) {
-        for (let i = childCount - 1; i >= 0; i--) {
-          treeStack.push({ v: v[keys[i]], k: keys[i], d: d + 1, r: false, p: node });
+      const childItems = [];
+      if (Array.isArray(v)) {
+        for (let i = v.length - 1; i >= 0; i--) {
+          childItems.push({ v: v[i], k: '[' + i + ']', d: d + 1, r: false, p: node });
+        }
+      } else {
+        const keys = Object.keys(v);
+        for (let i = keys.length - 1; i >= 0; i--) {
+          const key = keys[i];
+          childItems.push({ v: v[key], k: key, d: d + 1, r: false, p: node });
         }
       }
+      
+      treeStack.push(...childItems);
     } else {
       node = { id, k, type: 6, dv: String(v), d, r, c: false, children: [] };
     }
     
-    if (parent) {
-      parent.children.push(node);
-    } else {
+    if (r) {
       rootNode = node;
+    }
+    
+    if (parent) {
+      parent.children.unshift(node);
     }
     
     flatNodes.push(node);
@@ -771,33 +832,111 @@ function parseAndCreateOptimized(content) {
 }
 
 function normalizeNodes(nodes) {
-  const typeMap = ['null', 'boolean', 'number', 'string', 'array', 'object', 'unknown'];
-  
-  for (let i = 0; i < nodes.length; i++) {
-    const node = nodes[i];
-    node.key = node.k;
-    node.type = typeMap[node.type];
-    node.displayValue = node.dv;
-    node.fullValue = node.fv;
-    node.childCount = node.cc;
-    node._rawValue = node.rv;
-    node._isLazy = node.il;
-    node.depth = node.d;
-    node.isRoot = node.r;
-    node.collapsed = node.c;
-    
-    delete node.k;
-    delete node.dv;
-    delete node.fv;
-    delete node.cc;
-    delete node.rv;
-    delete node.il;
+  nodes.forEach(node => {
+    if (node.type === 4 || node.type === 5) {
+      node.collapsed = node.c !== undefined ? node.c : true;
+    } else {
+      node.collapsed = false;
+    }
+    delete node.c;
     delete node.d;
     delete node.r;
-    delete node.c;
+  });
+}
+
+function flattenTreeSyncOptimized(root) {
+  const result = [];
+  
+  function traverse(node) {
+    if (!node) return;
+    
+    result.push({
+      id: node.id,
+      k: node.k,
+      v: node.dv,
+      type: node.type,
+      depth: node.depth,
+      collapsed: node.collapsed,
+      hasChildren: node.children && node.children.length > 0
+    });
+    
+    if (!node.collapsed && node.children) {
+      node.children.forEach(traverse);
+    }
   }
   
-  return nodes;
+  traverse(root);
+  return result;
+}
+
+function ensureChildrenSync(node) {
+  if (!node._raw) return;
+  
+  const children = [];
+  if (node._isArray) {
+    for (let i = 0; i < node._raw.length; i++) {
+      const child = createNodeFromRaw(node._raw[i], '[' + i + ']', node.depth + 1);
+      children.push(child);
+    }
+  } else {
+    for (const key of node._keys) {
+      const child = createNodeFromRaw(node._raw[key], key, node.depth + 1);
+      children.push(child);
+    }
+  }
+  
+  node.children = children;
+  delete node._raw;
+  delete node._keys;
+  delete node._len;
+  delete node._isArray;
+}
+
+function createNodeFromRaw(value, key, depth) {
+  const t = typeof value;
+  let node;
+  
+  if (value === null) {
+    node = { id: ++idCounter, k: key, type: 0, dv: 'null', depth, collapsed: false, children: [] };
+  } else if (t === 'boolean') {
+    node = { id: ++idCounter, k: key, type: 1, dv: value ? 'true' : 'false', depth, collapsed: false, children: [] };
+  } else if (t === 'number') {
+    node = { id: ++idCounter, k: key, type: 2, dv: String(value), depth, collapsed: false, children: [] };
+  } else if (t === 'string') {
+    const len = value.length;
+    node = { 
+      id: ++idCounter, k: key, type: 3, 
+      dv: len > 200 ? value.substring(0, 200) + '...' : value,
+      fv: value, depth, collapsed: false, children: [] 
+    };
+  } else if (t === 'object') {
+    if (Array.isArray(value)) {
+      node = { 
+        id: ++idCounter, k: key, type: 4, 
+        dv: `Array(${value.length})`, 
+        depth, collapsed: false, 
+        children: [],
+        _raw: value,
+        _len: value.length,
+        _isArray: true
+      };
+    } else {
+      const keys = Object.keys(value);
+      node = { 
+        id: ++idCounter, k: key, type: 5, 
+        dv: `Object(${keys.length})`, 
+        depth, collapsed: false, 
+        children: [],
+        _raw: value,
+        _keys: keys,
+        _isArray: false
+      };
+    }
+  } else {
+    node = { id: ++idCounter, k: key, type: 6, dv: String(value), depth, collapsed: false, children: [] };
+  }
+  
+  return node;
 }
 
 // ============================================
@@ -890,8 +1029,8 @@ function fallbackParse(content, size, startTime, fileId = null) {
           node._maxChildren = originalMaxChildren;
           if (node.children) node.children.forEach(expandAllSync);
         }
-        expandAllSync(rootNode);
         
+        expandAllSync(rootNode);
         currentNodes = flattenTreeSyncOptimized(rootNode);
         visibleNodes.value = markRaw(currentNodes);
         warningMessage.value = warning;
@@ -903,8 +1042,8 @@ function fallbackParse(content, size, startTime, fileId = null) {
         isParsing.value = false;
       }
     }
+    
     parseTime.value = Date.now() - startTime;
-    parseStatus.value = '';
     
     // ============================================
     // 重要：只在同步解析完成且有数据时才缓存
@@ -951,133 +1090,209 @@ function estimateNodeCount(obj, count = 0) {
 function initWorker() {
   worker = new Worker(workerUrl);
   worker.onmessage = (e) => {
-    const { type, visibleNodes: nodes, totalNodes: cnt, parseTime: pt, tree, message, truncated } = e.data;
+    const { type, visibleNodes: nodes, totalNodes: cnt, parseTime: pt, tree, message, truncated, estimatedTotal } = e.data;
+    
     if (type === 'parsed' || type === 'toggled' || type === 'updated') {
-      visibleNodes.value = nodes;
-      // ============================================
-      // 重要：totalNodes 必须等于展开后的节点数（nodes.length）
-      //       任何修改都不能改变这个行为！
-      // ============================================
-      totalNodes.value = nodes.length;
+      updateParseStep('render', `${cnt.toLocaleString()} 节点`, true);
+      updateParseStep('background', '完成', true);
+      
+      visibleNodes.value = markRaw(nodes);
+      totalNodes.value = cnt;
       if (pt) parseTime.value = pt;
       if (tree) jsonTree.value = tree;
-      warningMessage.value = '';
+      warningMessage.value = truncated ? '文件过大，已截断显示部分节点' : '';
       parseStatus.value = '';
-      // ============================================
-      // 重置解析中标志，允许切换文件
-      // ============================================
       isParsing.value = false;
       
-      // ============================================
-      // Worker处理完成后缓存结果
-      // ============================================
       if (currentFileId.value && nodes && nodes.length > 0) {
         parseCache.set(currentFileId.value, {
           visibleNodes: nodes,
           jsonTree: tree || jsonTree.value,
-          totalNodes: nodes.length,
-          warningMessage: ''
+          totalNodes: cnt,
+          warningMessage: warningMessage.value
         });
+      }
+      
+      completeParseStep('render', `${cnt.toLocaleString()} 节点`);
+      completeParseStep('background', '完成');
+    } else if (type === 'subtree') {
+      const { nodes: subtreeNodes, parentId } = e.data;
+      if (subtreeNodes && subtreeNodes.length > 0) {
+        const currentNodes = visibleNodes.value || [];
+        const parentIndex = currentNodes.findIndex(n => n.id === parentId);
+        if (parentIndex >= 0) {
+          const newNodes = [...currentNodes];
+          newNodes[parentIndex] = { ...newNodes[parentIndex], collapsed: false };
+          const children = subtreeNodes.slice(1);
+          newNodes.splice(parentIndex + 1, 0, ...children);
+          visibleNodes.value = markRaw(newNodes);
+          totalNodes.value = newNodes.length;
+        }
       }
     } else if (type === 'error') {
       errorMessage.value = message;
       parseStatus.value = 'error';
-      // ============================================
-      // 重置解析中标志，允许切换文件
-      // ============================================
       isParsing.value = false;
     }
   };
   worker.onerror = (err) => {
     errorMessage.value = err.message;
     parseStatus.value = 'error';
-    // ============================================
-    // 重置解析中标志，允许切换文件
-    // ============================================
+    isParsing.value = false;
+  };
+  worker.onmessageerror = (err) => {
+    errorMessage.value = 'Worker消息处理错误';
+    parseStatus.value = 'error';
     isParsing.value = false;
   };
 }
 
 function parseJSONContent(content, size, fileId = null) {
   try {
+    let currentNodes;
     fileSize.value = size;
     isLargeFileMode.value = size > 50 * 1024 * 1024;
     parseStatus.value = 'parsing';
     errorMessage.value = '';
+    currentFileText.value = content;
+    
     const parseStartTime = Date.now();
-    if (worker && size <= 50 * 1024 * 1024) {
-      isUsingWorker.value = true;
-      const timeout = setTimeout(() => {
-        isUsingWorker.value = false;
-        errorMessage.value = '解析超时，正在尝试备用方案...';
-        fallbackParse(content, size, parseStartTime, fileId);
-      }, 30000);
-      const handleMessage = (e) => {
-        clearTimeout(timeout);
-        worker.removeEventListener('message', handleMessage);
-        worker.removeEventListener('error', handleError);
-        try {
-          const { type, visibleNodes: nodes, totalNodes: cnt, parseTime: pt, message: msg } = e.data;
-          if (type === 'parsed' || type === 'toggled' || type === 'updated') {
-            visibleNodes.value = nodes;
-            // ============================================
-            // 重要：totalNodes 必须等于展开后的节点数
-            //       使用 nodes.length 而不是 cnt，确保节点数显示正确！
-            // ============================================
-            totalNodes.value = nodes.length;
-            if (pt) parseTime.value = pt;
-            parseStatus.value = '';
-            if (fileId) {
-              parseCache.set(fileId, {
-                visibleNodes: nodes,
-                jsonTree: null,
-                totalNodes: nodes.length,
-                warningMessage: ''
-              });
-            }
-          } else if (type === 'error') {
-            isUsingWorker.value = false;
-            errorMessage.value = msg;
-            parseStatus.value = 'error';
-            fallbackParse(content, size, parseStartTime, fileId);
-          }
-        } catch (err) {
-          isUsingWorker.value = false;
-          errorMessage.value = '响应处理失败: ' + err.message;
-          parseStatus.value = 'error';
-        }
-      };
-      const handleError = (err) => {
-        isUsingWorker.value = false;
-        clearTimeout(timeout);
-        worker.removeEventListener('message', handleMessage);
-        worker.removeEventListener('error', handleError);
-        errorMessage.value = 'Worker错误: ' + err.message;
-        parseStatus.value = 'error';
-        fallbackParse(content, size, parseStartTime, fileId);
-      };
-      worker.addEventListener('message', handleMessage);
-      worker.addEventListener('error', handleError);
-      try {
-        worker.postMessage({ type: 'parse', data: content });
-      } catch (err) {
-        isUsingWorker.value = false;
-        clearTimeout(timeout);
-        worker.removeEventListener('message', handleMessage);
-        worker.removeEventListener('error', handleError);
-        errorMessage.value = 'Worker发送失败: ' + err.message;
-        fallbackParse(content, size, parseStartTime, fileId);
-      }
-    } else {
-      isUsingWorker.value = false;
-      fallbackParse(content, size, parseStartTime, fileId);
+    
+    resetParseSteps();
+    startParseStep('read');
+    
+    if (!streamingValidator) {
+      streamingValidator = new StreamingValidator();
     }
+    if (!errorHandler) {
+      errorHandler = new ErrorHandler();
+    }
+    
+    try {
+      completeParseStep('read', `${(size / 1024 / 1024).toFixed(1)} MB`);
+      
+      startParseStep('validate');
+      const indexResult = streamingValidator.process(content);
+      completeParseStep('validate', `${content.length.toLocaleString()} 字符`);
+      
+      startParseStep('index');
+      if (!memoryIndex) {
+        memoryIndex = new MemoryIndex();
+      }
+      memoryIndex.loadFromStreamingIndex(indexResult, content);
+      
+      if (searchController) {
+        searchController.destroy();
+      }
+      searchController = new SearchController(memoryIndex, content);
+      completeParseStep('index', `${memoryIndex.keyCount?.toLocaleString() || 0} 键名`);
+      
+      startParseStep('render');
+      
+      if (worker) {
+        isUsingWorker.value = true;
+        isParsing.value = true;
+        visibleNodes.value = [];
+        totalNodes.value = 0;
+        worker.postMessage({ type: 'parseAndExpandAll', data: content });
+        currentNodes = [];
+      } else {
+        fallbackParse(content, size, Date.now(), fileId);
+      }
+      
+    } catch (validationError) {
+      if (validationError instanceof Error) {
+        const errorInfo = errorHandler.handleValidationError(validationError, content);
+        errorMessage.value = errorInfo.message;
+        warningMessage.value = errorInfo.suggestion;
+      } else {
+        errorMessage.value = validationError.message || '解析失败';
+      }
+      parseStatus.value = 'error';
+      isParsing.value = false;
+    }
+    
   } catch (err) {
-    isUsingWorker.value = false;
     errorMessage.value = '解析初始化失败: ' + err.message;
     parseStatus.value = 'error';
+    isParsing.value = false;
     console.error('Parse init error:', err);
   }
+}
+
+async function selectFile(fileId) {
+  isParsing.value = false;
+  currentFileId.value = fileId;
+  const file = files.value.find(f => f.id === fileId);
+  
+  if (!file) return;
+  
+  file.lastOpen = Date.now();
+  
+  if (pendingParseTask) {
+    clearTimeout(pendingParseTask);
+    pendingParseTask = null;
+  }
+  
+  const oldWorker = worker;
+  worker = null;
+  
+  if (oldWorker) {
+    try {
+      oldWorker.terminate();
+    } catch (e) {
+    }
+  }
+  
+  await new Promise(resolve => setTimeout(resolve, 10));
+  
+  initWorker();
+  
+  visibleNodes.value = [];
+  jsonTree.value = null;
+  errorMessage.value = '';
+  warningMessage.value = '';
+  totalNodes.value = 0;
+  parseStatus.value = '';
+  
+  if (parseCache.has(fileId)) {
+    const cached = parseCache.get(fileId);
+    
+    if (cached.visibleNodes && cached.visibleNodes.length > 0) {
+      visibleNodes.value = markRaw(cached.visibleNodes);
+      jsonTree.value = cached.jsonTree;
+      totalNodes.value = cached.visibleNodes.length;
+      warningMessage.value = cached.warningMessage;
+      parseStatus.value = '';
+      return;
+    } else {
+      parseCache.delete(fileId);
+    }
+  }
+  
+  parseStatus.value = 'parsing';
+  
+  pendingParseTask = setTimeout(() => {
+    parseJSONContent(file.content, file.size, fileId);
+    pendingParseTask = null;
+  }, 50);
+}
+
+function handleDragOver(e) {
+  e.preventDefault();
+  isDragging.value = true;
+}
+
+function handleDragLeave(e) {
+  e.preventDefault();
+  isDragging.value = false;
+}
+
+function handleDrop(e) {
+  e.preventDefault();
+  isDragging.value = false;
+  const droppedFiles = Array.from(e.dataTransfer.files);
+  handleOpenFiles(droppedFiles);
 }
 
 async function handleFileSelect(e) {
@@ -1093,428 +1308,181 @@ async function handleOpenFiles(fileList) {
   let lastFileId = null;
   for (const file of fileList) {
     if (!file.name.endsWith('.json') && file.type !== 'application/json') continue;
+    
     const content = await file.text();
     const size = new Blob([content]).size;
     const fileData = {
       id: Date.now() + Math.random(),
       name: file.name,
-      content: content,
-      size: size
+      content,
+      size,
+      lastOpen: Date.now()
     };
-    files.value.push(fileData);
-    await saveFile(fileData);
-    lastFileId = fileData.id;
+    
+    const existingFile = files.value.find(f => f.name === file.name);
+    if (existingFile) {
+      existingFile.content = content;
+      existingFile.size = size;
+      existingFile.lastOpen = Date.now();
+      lastFileId = existingFile.id;
+    } else {
+      files.value.push(fileData);
+      lastFileId = fileData.id;
+    }
   }
+  
   if (lastFileId) {
     selectFile(lastFileId);
   }
 }
 
-async function handlePasteContent(text) {
-  // 尝试解析并格式化JSON
-  let formattedContent = text;
-  try {
-    const parsed = JSON.parse(text);
-    formattedContent = JSON.stringify(parsed, null, 2);
-  } catch (e) {
-    console.warn('Pasted content is not valid JSON, keeping as-is');
+function deleteFileFromCache(fileId) {
+  const index = files.value.findIndex(f => f.id === fileId);
+  if (index > -1) {
+    files.value.splice(index, 1);
+    parseCache.delete(fileId);
+    
+    if (currentFileId.value === fileId) {
+      isParsing.value = false;
+      
+      if (worker) {
+        try {
+          worker.terminate();
+          worker = null;
+        } catch (e) {
+        }
+      }
+      
+      currentFileId.value = files.value.length > 0 ? files.value[0].id : null;
+      visibleNodes.value = [];
+      jsonTree.value = null;
+      totalNodes.value = 0;
+      fileSize.value = 0;
+      parseTime.value = 0;
+      warningMessage.value = '';
+      errorMessage.value = '';
+      parseStatus.value = '';
+      
+      if (currentFileId.value) {
+        setTimeout(() => selectFile(currentFileId.value), 10);
+      }
+    }
+  }
+}
+
+function clearCache() {
+  isParsing.value = false;
+  
+  if (worker) {
+    try {
+      worker.terminate();
+      worker = null;
+    } catch (e) {
+      console.warn('Failed to terminate worker:', e);
+    }
   }
   
-  const fileData = {
-    id: Date.now() + Math.random(),
-    name: 'pasted-' + new Date().toISOString().slice(0, 10) + '.json',
-    content: formattedContent,
-    size: new Blob([formattedContent]).size
-  };
-  files.value.push(fileData);
-  await saveFile(fileData);
-  selectFile(fileData.id);
-}
-
-const parseCache = new Map();
-let pendingParseTask = null;
-
-function selectFile(fileId) {
-  currentFileId.value = fileId;
-  const file = files.value.find(f => f.id === fileId);
-  if (file) {
-    file.lastOpen = Date.now();
-    
-    if (pendingParseTask) {
-      clearTimeout(pendingParseTask);
-      pendingParseTask = null;
-    }
-    
-    if (worker) {
-      try {
-        worker.terminate();
-        worker = null;
-        initWorker();
-      } catch (e) {
-        console.warn('Failed to restart worker:', e);
-      }
-    }
-    
-    if (parseCache.has(fileId)) {
-      const cached = parseCache.get(fileId);
-      
-      visibleNodes.value = [];
-      totalNodes.value = 0;
-      
-      requestAnimationFrame(() => {
-        visibleNodes.value = markRaw(cached.visibleNodes);
-        jsonTree.value = cached.jsonTree;
-        // ============================================
-        // 重要：totalNodes 必须等于展开后的节点数
-        //       任何修改都不能改变这个行为！
-        // ============================================
-        totalNodes.value = cached.visibleNodes.length;
-        warningMessage.value = cached.warningMessage;
-        parseStatus.value = '';
-      });
-      return;
-    }
-    
-    visibleNodes.value = [];
-    jsonTree.value = null;
-    errorMessage.value = '';
-    warningMessage.value = '';
-    totalNodes.value = 0;
-    parseStatus.value = 'parsing';
-    
-    pendingParseTask = setTimeout(() => {
-      parseJSONContent(file.content, file.size, fileId);
-      pendingParseTask = null;
-    }, 50);
+  if (pendingParseTask) {
+    clearTimeout(pendingParseTask);
+    pendingParseTask = null;
   }
+  
+  parseCache.clear();
+  files.value = [];
+  currentFileId.value = null;
+  visibleNodes.value = [];
+  jsonTree.value = null;
+  totalNodes.value = 0;
+  fileSize.value = 0;
+  parseTime.value = 0;
+  warningMessage.value = '';
+  errorMessage.value = '';
+  parseStatus.value = '';
 }
-
-function handleDragOver(e) {
-  e.preventDefault();
-  isDragging.value = true;
-}
-
-function handleDragLeave(e) {
-  e.preventDefault();
-  isDragging.value = false;
-}
-
-async function handleDrop(e) {
-  e.preventDefault();
-  isDragging.value = false;
-  await handleOpenFiles(Array.from(e.dataTransfer.files));
-}
-
-let toggleDebounceTimeout = null;
 
 function toggleNode(nodeId) {
-  if (isUsingWorker.value && worker) {
+  if (worker && !isParsing.value) {
     worker.postMessage({ type: 'toggle', nodeId });
-  } else {
-    if (!jsonTree.value) return;
-    
-    clearTimeout(toggleDebounceTimeout);
-    
-    toggleDebounceTimeout = setTimeout(() => {
-      const nodeRefs = new Map();
-      function findNode(n) {
-        nodeRefs.set(n.id, n);
-        if (n.id === nodeId) {
-          return n;
-        }
-        if (!n.collapsed && n.children) {
-          for (const child of n.children) {
-            const found = findNode(child);
-            if (found) return found;
-          }
-        }
-        return null;
-      }
-      
-      const targetNode = findNode(jsonTree.value);
-      if (!targetNode) return;
-      
-      const wasCollapsed = targetNode.collapsed;
-      targetNode.collapsed = !targetNode.collapsed;
-      
-      if (!targetNode.collapsed) {
-        ensureChildrenSync(targetNode);
-      }
-      
-      const newVisible = flattenTreeSyncOptimized(jsonTree.value);
-      visibleNodes.value = markRaw(newVisible);
-    }, 0);
   }
 }
 
 function expandAll() {
-  if (isUsingWorker.value && worker) {
+  if (worker && !isParsing.value) {
     worker.postMessage({ type: 'expandAll' });
-  } else {
-    if (!jsonTree.value) return;
-    function expand(node) {
-      if (!node) return;
-      node.collapsed = false;
-      const originalMaxChildren = node._maxChildren;
-      node._maxChildren = Infinity;
-      ensureChildrenSync(node);
-      node._maxChildren = originalMaxChildren;
-      if (node.children) node.children.forEach(expand);
-    }
-    expand(jsonTree.value);
-    visibleNodes.value = flattenTreeSync(jsonTree.value);
-  }
-}
-
-function expandAllInChunks(node, depth = 0) {
-  if (!node) return;
-  
-  if (node.collapsed === false && node.children && node.children.length > 0) {
-    const chunkSize = 100;
-    let index = 0;
-    
-    function processChunk() {
-      const end = Math.min(index + chunkSize, node.children.length);
-      for (let i = index; i < end; i++) {
-        expandAllInChunks(node.children[i], depth + 1);
-      }
-      index = end;
-      
-      if (index < node.children.length) {
-        if (depth < 3) {
-          setTimeout(processChunk, 0);
-        } else {
-          requestAnimationFrame(processChunk);
-        }
-      } else if (depth === 0) {
-        visibleNodes.value = markRaw(flattenTreeSyncOptimized(jsonTree.value));
-      }
-    }
-    
-    processChunk();
-    return;
-  }
-  
-  node.collapsed = false;
-  
-  const originalMaxChildren = node._maxChildren;
-  node._maxChildren = Infinity;
-  ensureChildrenSync(node);
-  node._maxChildren = originalMaxChildren;
-  
-  if (node.children && node.children.length > 0) {
-    const chunkSize = 100;
-    let index = 0;
-    
-    function processChunk() {
-      const end = Math.min(index + chunkSize, node.children.length);
-      for (let i = index; i < end; i++) {
-        expandAllInChunks(node.children[i], depth + 1);
-      }
-      index = end;
-      
-      if (index < node.children.length) {
-        if (depth < 3) {
-          setTimeout(processChunk, 0);
-        } else {
-          requestAnimationFrame(processChunk);
-        }
-      } else if (depth === 0) {
-        visibleNodes.value = markRaw(flattenTreeSyncOptimized(jsonTree.value));
-      }
-    }
-    
-    processChunk();
-  } else if (depth === 0) {
-    visibleNodes.value = markRaw(flattenTreeSyncOptimized(jsonTree.value));
   }
 }
 
 function collapseAll() {
-  if (isUsingWorker.value && worker) {
+  if (worker && !isParsing.value) {
     worker.postMessage({ type: 'collapseAll' });
-  } else {
-    if (!jsonTree.value) return;
-    function collapse(node) {
-      node.collapsed = true;
-      if (node.children) node.children.forEach(collapse);
-    }
-    collapse(jsonTree.value);
-    visibleNodes.value = flattenTreeSync(jsonTree.value);
   }
-}
-
-function handleScroll(e) {
 }
 
 function toggleFormatCompress() {
-  if (!currentFile.value) return;
-  
-  if (isTextMode.value) {
-    try {
-      const parsed = JSON.parse(textContent.value);
-      const formatted = JSON.stringify(parsed, null, 2);
-      textContent.value = formatted;
-      updateCurrentFile(formatted);
-      errorMessage.value = '';
-      isTextMode.value = false;
-    } catch (e) {
-      errorMessage.value = 'JSON格式错误: ' + e.message;
-      parseStatus.value = 'error';
-    }
-  } else {
-    try {
-      const parsed = JSON.parse(currentFile.value.content);
-      const compressed = JSON.stringify(parsed);
-      textContent.value = compressed;
-      isTextMode.value = true;
-    } catch (e) {
-      errorMessage.value = '压缩失败: ' + e.message;
-      parseStatus.value = 'error';
-    }
-  }
-}
-
-function formatJSON() {
-  if (!currentFile.value) return;
-  try {
-    const parsed = JSON.parse(currentFile.value.content);
-    const formatted = JSON.stringify(parsed, null, 2);
-    updateCurrentFile(formatted);
-    isEscaped.value = false;
-    errorMessage.value = '';
-  } catch (e) {
-    errorMessage.value = '格式化失败: ' + e.message;
-    parseStatus.value = 'error';
-  }
-}
-
-function compressJSON() {
-  if (!currentFile.value) return;
-  try {
-    const parsed = JSON.parse(currentFile.value.content);
-    const compressed = JSON.stringify(parsed);
-    updateCurrentFile(compressed);
-    isEscaped.value = false;
-    errorMessage.value = '';
-  } catch (e) {
-    errorMessage.value = '压缩失败: ' + e.message;
-    parseStatus.value = 'error';
-  }
+  isTextMode.value = !isTextMode.value;
 }
 
 function toggleEscape() {
-  if (!currentFile.value) return;
-  try {
-    const content = currentFile.value.content;
-    let newContent;
-    
-    if (isEscaped.value) {
-      const unescapedStr = JSON.parse(content);
-      try {
-        const parsed = JSON.parse(unescapedStr);
-        newContent = JSON.stringify(parsed, null, 2);
-      } catch {
-        newContent = unescapedStr;
-      }
-      isEscaped.value = false;
-      errorMessage.value = '反转义完成';
-    } else {
-      const parsed = JSON.parse(content);
-      newContent = JSON.stringify(JSON.stringify(parsed));
-      isEscaped.value = true;
-      errorMessage.value = '转义完成';
-    }
-    
-    updateCurrentFile(newContent);
-  } catch (e) {
-    errorMessage.value = '转义/反转义失败: ' + e.message;
-  }
-}
-
-function updateCurrentFile(content) {
-  const file = files.value.find(f => f.id === currentFileId.value);
-  if (file) {
-    file.content = content;
-    file.size = new Blob([content]).size;
-    saveFile(file);
-    parseJSONContent(file.content, file.size);
-  }
-}
-
-function copyToClipboard(text) {
-  navigator.clipboard.writeText(text);
-}
-
-function copyPath(node) {
-  let pathStr = '';
-  if (node.path.length === 0) {
-    pathStr = 'root';
-  } else {
-    pathStr = 'root.' + node.path.map(p => {
-      if (typeof p === 'number' || p.match(/^\[\d+\]$/)) return p;
-      return p.match(/^[a-zA-Z_][a-zA-Z0-9_]*$/) ? p : '"' + p + '"';
-    }).join('.');
-  }
-  copyToClipboard(pathStr);
+  isEscaped.value = !isEscaped.value;
 }
 
 function exportJSON() {
   if (!currentFile.value) return;
-  const blob = new Blob([currentFile.value.content], { type: 'application/json' });
+  
+  let content = currentFile.value.content;
+  if (!isTextMode.value) {
+    try {
+      const parsed = JSON.parse(content);
+      content = JSON.stringify(parsed, null, 2);
+    } catch (e) {
+      console.error('Failed to format JSON:', e);
+    }
+  }
+  
+  const blob = new Blob([content], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = currentFile.value.name.replace('.json', '') + '_formatted.json';
+  a.download = currentFile.value.name;
+  document.body.appendChild(a);
   a.click();
+  document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
 
-function handleKeydown(e) {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
-    e.preventDefault();
-  }
-  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-    e.preventDefault();
-    exportJSON();
-  }
-  if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'P') {
-    e.preventDefault();
-    showCommandPalette.value = !showCommandPalette.value;
-  }
-}
-
-async function handlePasteFromClipboard() {
+function formatJSON() {
+  if (!currentFile.value) return;
+  
   try {
-    const text = await navigator.clipboard.readText();
-    if (text && text.trim()) {
-      await handlePasteContent(text.trim());
-    }
-  } catch (err) {
-    console.error('Failed to read clipboard:', err);
+    const parsed = JSON.parse(currentFile.value.content);
+    textContent.value = JSON.stringify(parsed, null, 2);
+    isTextMode.value = true;
+  } catch (e) {
+    errorMessage.value = 'JSON 格式错误，无法格式化';
   }
 }
 
-function handlePasteEvent(e) {
-  e.preventDefault();
+function handleSearch(query) {
+  searchQuery.value = query;
   
-  // 优先检查是否粘贴了文件
-  const files = e.clipboardData?.files;
-  if (files && files.length > 0) {
-    const jsonFiles = Array.from(files).filter(file => 
-      file.name.endsWith('.json') || file.type === 'application/json'
-    );
-    if (jsonFiles.length > 0) {
-      handleOpenFiles(jsonFiles);
-      return;
-    }
+  if (query) {
+    const matches = visibleNodes.value.filter(n => n && n.k && n.k.toLowerCase().includes(query.toLowerCase()));
+    searchMatchCount.value = matches.length;
+    searchMatchIndex.value = 0;
+  } else {
+    searchMatchCount.value = 0;
+    searchMatchIndex.value = -1;
   }
-  
-  // 否则尝试粘贴文本内容
-  const text = e.clipboardData?.getData('text');
-  if (text && text.trim()) {
-    handlePasteContent(text.trim());
-  }
+}
+
+function handleSearchNext() {
+  if (searchMatchCount.value === 0) return;
+  searchMatchIndex.value = (searchMatchIndex.value + 1) % searchMatchCount.value;
+}
+
+function handleSearchPrev() {
+  if (searchMatchCount.value === 0) return;
+  searchMatchIndex.value = (searchMatchIndex.value - 1 + searchMatchCount.value) % searchMatchCount.value;
 }
 
 function handleSelectNode(node) {
@@ -1522,115 +1490,65 @@ function handleSelectNode(node) {
   showDetailPanel.value = true;
 }
 
-function handleUpdateValue(newValue) {
-  if (!selectedNode.value || !currentFile.value) return;
+function handleUpdateValue({ nodeId, value }) {
+  console.log('Update value:', nodeId, value);
+}
+
+function handlePasteContent(content) {
   try {
-    let content = currentFile.value.content;
-    const path = selectedNode.value.path;
-    if (path.length === 0) {
-      let newVal;
-      if (selectedNode.value.type === 'number') {
-        newVal = parseFloat(newValue);
-      } else if (selectedNode.value.type === 'boolean') {
-        newVal = newValue === 'true';
-      } else {
-        newVal = newValue;
-      }
-      const parsed = JSON.parse(content);
-      const newContent = JSON.stringify(newVal, null, 2);
-      updateCurrentFile(newContent);
-    } else {
-      const parsed = JSON.parse(content);
-      let obj = parsed;
-      for (let i = 0; i < path.length - 1; i++) {
-        obj = obj[path[i]];
-      }
-      const lastKey = path[path.length - 1];
-      if (selectedNode.value.type === 'number') {
-        obj[lastKey] = parseFloat(newValue);
-      } else if (selectedNode.value.type === 'boolean') {
-        obj[lastKey] = newValue === 'true';
-      } else {
-        obj[lastKey] = newValue;
-      }
-      updateCurrentFile(JSON.stringify(parsed, null, 2));
-    }
-    showDetailPanel.value = false;
-    selectedNode.value = null;
+    JSON.parse(content);
+    const fileData = {
+      id: Date.now() + Math.random(),
+      name: 'pasted.json',
+      content,
+      size: new Blob([content]).size,
+      lastOpen: Date.now()
+    };
+    files.value.push(fileData);
+    selectFile(fileData.id);
   } catch (e) {
-    errorMessage.value = '更新失败: ' + e.message;
+    errorMessage.value = '粘贴的内容不是有效的 JSON';
   }
 }
 
-function handleSearch(query) {
-  searchQuery.value = query;
-  updateSearchMatches();
+function copyPath(path) {
+  navigator.clipboard.writeText(path);
 }
 
-function handleSearchNext() {
-  if (searchMatchCount.value > 0) {
-    searchMatchIndex.value = searchMatchIndex.value >= searchMatchCount.value ? 1 : searchMatchIndex.value + 1;
-  }
-}
-
-function handleSearchPrev() {
-  if (searchMatchCount.value > 0) {
-    searchMatchIndex.value = searchMatchIndex.value <= 1 ? searchMatchCount.value : searchMatchIndex.value - 1;
-  }
+function handleScroll(pos) {
+  cursorPosition.value = pos;
 }
 
 function toggleTheme() {
-  if (currentTheme.value === 'light') {
-    currentTheme.value = 'dark';
-    document.documentElement.removeAttribute('data-theme');
-  } else {
-    currentTheme.value = 'light';
-    document.documentElement.setAttribute('data-theme', 'light');
-  }
+  document.documentElement.classList.toggle('dark');
 }
 
-onMounted(async () => {
-  if (currentTheme.value === 'light') {
-    document.documentElement.setAttribute('data-theme', 'light');
-  }
+function handleScrollToNode(nodeId) {
+  console.log('Scroll to node:', nodeId);
+}
+
+const workerUrl = URL.createObjectURL(new Blob([workerCode], { type: 'application/javascript' }));
+
+onMounted(() => {
   initWorker();
-  await initDB();
-  const cached = await loadFiles();
-  if (cached.length > 0) {
-    files.value = cached;
-    const firstFile = cached[0];
-    if (firstFile.size < 10 * 1024 * 1024) {
-      selectFile(firstFile.id);
-    }
-  } else {
-    const sampleFile = {
-      id: 'sample',
-      name: '示例数据.json',
-      content: JSON.stringify(SAMPLE_JSON, null, 2),
-      size: new Blob([JSON.stringify(SAMPLE_JSON)]).size
-    };
-    files.value = [sampleFile];
-    selectFile('sample');
-  }
-  if (containerRef.value) {
-    containerHeight.value = containerRef.value.clientHeight;
-  }
-  window.addEventListener('keydown', handleKeydown);
-  window.addEventListener('paste', handlePasteEvent);
-  window.addEventListener('resize', () => {
-    if (containerRef.value) {
-      containerHeight.value = containerRef.value.clientHeight;
-    }
-  });
+  
+  const sampleContent = JSON.stringify(SAMPLE_JSON, null, 2);
+  const sampleFile = {
+    id: 1,
+    name: 'sample.json',
+    content: sampleContent,
+    size: new Blob([sampleContent]).size,
+    lastOpen: Date.now()
+  };
+  files.value.push(sampleFile);
+  selectFile(1);
 });
 
 onUnmounted(() => {
   if (worker) {
     worker.terminate();
-    URL.revokeObjectURL(workerUrl);
   }
-  window.removeEventListener('keydown', handleKeydown);
-  window.removeEventListener('paste', handlePasteEvent);
+  URL.revokeObjectURL(workerUrl);
 });
 </script>
 
@@ -1679,17 +1597,24 @@ onUnmounted(() => {
       </div>
     </header>
 
-    <div class="main-content">
-      <SideBar
-        :files="files"
-        :currentFileId="currentFileId"
-        @selectFile="selectFile"
-        @deleteFile="deleteFileFromCache"
-        @openFiles="handleOpenFiles"
-        @clearCache="clearCache"
-        @expandAll="expandAll"
-        @collapseAll="collapseAll"
-      />
+    <ParseProgress
+      :progress="parseProgress"
+      :current-step="currentStep"
+      :is-parsing="isParsing"
+    />
+
+    <div class="app-layout">
+      <div class="main-content">
+        <SideBar
+          :files="files"
+          :currentFileId="currentFileId"
+          @selectFile="selectFile"
+          @deleteFile="deleteFileFromCache"
+          @openFiles="handleOpenFiles"
+          @clearCache="clearCache"
+          @expandAll="expandAll"
+          @collapseAll="collapseAll"
+        />
 
       <main class="editor-area">
         <EditorTabs
@@ -1698,8 +1623,14 @@ onUnmounted(() => {
           @selectTab="selectFile"
           @closeTab="deleteFileFromCache"
         />
+        <SkeletonLoader
+          v-if="parseStatus === 'parsing' && !errorMessage"
+          :loading="parseStatus === 'parsing'"
+          :status-text="parsingPhase"
+          :progress="parsingProgress"
+        />
         <JsonTreeView
-          v-show="!isTextMode"
+          v-show="!isTextMode && parseStatus !== 'parsing'"
           ref="containerRef"
           :visibleNodes="filteredVisibleNodes"
           :totalNodes="totalNodes"
@@ -1709,6 +1640,8 @@ onUnmounted(() => {
           :errorMessage="errorMessage"
           :searchMatchIndex="searchMatchIndex"
           :searchMatchCount="searchMatchCount"
+          :memory-index="memoryIndex"
+          :current-file-text="currentFileText"
           @toggleNode="toggleNode"
           @scroll="handleScroll"
           @selectNode="handleSelectNode"
@@ -1726,6 +1659,7 @@ onUnmounted(() => {
             spellcheck="false"
           ></textarea>
         </div>
+        
       </main>
 
       <DetailPanel
@@ -1735,25 +1669,41 @@ onUnmounted(() => {
         @close="showDetailPanel = false"
         @updateValue="handleUpdateValue"
       />
-    </div>
+    </div> <!-- .main-content -->
 
-    <StatusBar
-      :fileSize="fileSize"
-      :totalNodes="totalNodes"
-      :parseTime="parseTime"
+    <ConsolePanel
+      :steps="parseSteps"
+      :is-expanded="showConsole"
+      :background-progress="backgroundProgress"
+      :total-nodes="totalNodes"
+      @toggle="showConsole = !showConsole"
+      @copy="copyLog"
+      @background="runInBackground"
+      @clear="clearLog"
     />
 
-    <CommandPalette
-      :visible="showCommandPalette"
-      @close="showCommandPalette = false"
-      @openFiles="handleOpenFiles"
-      @saveFile="exportJSON"
-      @format="formatJSON"
-      @escape="toggleEscape"
-      @toggleTheme="toggleTheme"
-      @search="handleSearch"
-    />
-  </div>
+    <footer class="app-footer">
+      <StatusBar
+        :fileSize="fileSize"
+        :totalNodes="totalNodes"
+        :parseTime="parseTime"
+        :is-parsing="isParsing"
+        :parse-status="parseStatus"
+      />
+    </footer> <!-- .app-footer -->
+  </div> <!-- .app-layout -->
+  
+  <CommandPalette
+    :visible="showCommandPalette"
+    @close="showCommandPalette = false"
+    @openFiles="handleOpenFiles"
+    @saveFile="exportJSON"
+    @format="formatJSON"
+    @escape="toggleEscape"
+    @toggleTheme="toggleTheme"
+    @search="handleSearch"
+  />
+  </div> <!-- .app -->
 </template>
 
 <style scoped>
@@ -1761,8 +1711,8 @@ onUnmounted(() => {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background: var(--bg);
-  color: var(--text);
+  background: #ffffff;
+  color: #333333;
   overflow: hidden;
 }
 
@@ -1773,85 +1723,74 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 12px;
-  position: relative;
+  padding: 0 16px;
+  flex-shrink: 0;
 }
 
 .title-left {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-shrink: 0;
 }
 
 .logo-icon {
-  color: #007acc;
+  color: #4a90d9;
 }
 
 .logo-text {
   font-size: 14px;
   font-weight: 600;
-  color: #333333;
+  color: #333;
 }
 
 .logo-pro {
-  color: #007acc;
+  color: #4a90d9;
 }
 
 .title-separator {
-  color: #e5e5e5;
-  margin: 0 4px;
+  color: #ccc;
 }
 
 .doc-title {
   font-size: 13px;
-  color: #6e6e6e;
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: #666;
 }
 
 .title-center {
   display: flex;
-  align-items: center;
-  gap: 4px;
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
+  gap: 8px;
 }
 
 .action-btn {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  border: none;
+  gap: 6px;
+  padding: 6px 12px;
   background: transparent;
-  color: #6e6e6e;
-  font-size: 12px;
+  border: 1px solid #ddd;
   border-radius: 4px;
   cursor: pointer;
-  transition: all 150ms;
+  font-size: 13px;
+  color: #333;
+  transition: all 0.2s;
 }
 
 .action-btn:hover:not(:disabled) {
-  background: #f0f0f0;
-  color: #333333;
+  background: #f5f5f5;
+  border-color: #ccc;
 }
 
-.action-btn:active:not(:disabled) {
-  background: #e5e5e5;
+.action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .btn-icon {
-  width: 14px;
-  height: 14px;
+  flex-shrink: 0;
 }
 
 .title-right {
   display: flex;
-  align-items: center;
   gap: 4px;
 }
 
@@ -1861,21 +1800,24 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: none;
   background: transparent;
-  color: #6e6e6e;
+  border: none;
   border-radius: 4px;
   cursor: pointer;
+  color: #666;
+  transition: all 0.2s;
 }
 
 .icon-btn:hover {
   background: #f0f0f0;
-  color: #333333;
+  color: #333;
 }
 
-.title-btn:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
+.app-layout {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .main-content {
@@ -1884,22 +1826,48 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-.drag-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.8);
+.app-footer {
+  flex-shrink: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
+  flex-direction: column;
+  min-height: 28px;
+  background: #f8f9fa;
+  border-top: 1px solid #dadce0;
 }
 
-.drag-message {
-  font-size: 24px;
-  color: var(--accent);
-  padding: 40px 60px;
-  border: 2px dashed var(--accent);
-  border-radius: 12px;
+.console-tabs-container {
+  border-top: 1px solid #e0e0e0;
+  background: #f8f9fa;
+}
+
+.console-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.console-tab {
+  padding: 4px 12px;
+  font-size: 12px;
+  color: #5f6368;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.console-tab:hover {
+  background: #e8eaed;
+}
+
+.console-tab.active {
+  background: #e0e0e0;
+  color: #202124;
+}
+
+.console-tab-content {
+  max-height: 120px;
+  overflow-y: auto;
 }
 
 .editor-area {
@@ -1907,30 +1875,47 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  max-height: calc(100vh - var(--titlebar-height, 40px) - var(--statusbar-height, 28px));
+  background: #ffffff;
 }
 
 .text-view {
   flex: 1;
-  display: flex;
-  min-height: 0;
-  background: var(--bg);
+  overflow: hidden;
 }
 
 .text-content {
-  flex: 1;
-  margin: 0;
-  padding: 16px;
+  width: 100%;
+  height: 100%;
   border: none;
   outline: none;
   resize: none;
-  background: var(--bg);
-  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--text-primary);
+  padding: 16px;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #333;
+  background: #ffffff;
   box-sizing: border-box;
-  white-space: pre;
-  overflow: auto;
 }
+
+.drag-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(74, 144, 217, 0.1);
+  border: 2px dashed #4a90d9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.drag-message {
+  font-size: 20px;
+  color: #4a90d9;
+  font-weight: 500;
+}
+
 </style>

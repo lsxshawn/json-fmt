@@ -25,7 +25,7 @@ function formatFileSize(bytes) {
 }
 
 function openFileClick() {
-  fileInputRef.value?.click();
+  emit('openFiles');
 }
 </script>
 
