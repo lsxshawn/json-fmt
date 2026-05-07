@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import Minimap from './Minimap.vue';
 import FolderIcon from './icons/FolderIcon.vue';
 import JsonIcon from './icons/JsonIcon.vue';
@@ -10,6 +10,10 @@ const props = defineProps({
   visibleNodes: {
     type: Array,
     default: () => []
+  },
+  totalNodes: {
+    type: Number,
+    default: 0
   },
   searchQuery: {
     type: String,
@@ -26,6 +30,14 @@ const props = defineProps({
   errorMessage: {
     type: String,
     default: ''
+  },
+  searchMatchIndex: {
+    type: Number,
+    default: 0
+  },
+  searchMatchCount: {
+    type: Number,
+    default: 0
   }
 });
 
@@ -64,7 +76,20 @@ const scrollProgress = computed(() => {
 
 function handleMinimapJump(scrollTop) {
   if (!containerRef.value) return;
-  containerRef.value.scrollTop = scrollTop;
+  const maxScroll = totalHeight.value - containerHeight.value;
+  const clampedScrollTop = Math.max(0, Math.min(scrollTop, maxScroll));
+  containerRef.value.scrollTop = clampedScrollTop;
+}
+
+function handleSearchKeydown(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (e.shiftKey) {
+      emit('searchPrev');
+    } else {
+      emit('searchNext');
+    }
+  }
 }
 
 
@@ -82,9 +107,14 @@ const matchCount = computed(() => {
 const currentMatchIndex = ref(0);
 
 const visibleRange = computed(() => {
-  const start = Math.max(0, Math.floor(scrollTop.value / ITEM_HEIGHT) - BUFFER_SIZE);
+  const itemCount = props.visibleNodes.length;
   const visibleCount = Math.ceil(containerHeight.value / ITEM_HEIGHT) + BUFFER_SIZE * 2;
-  const end = Math.min(props.visibleNodes.length, start + visibleCount);
+  const maxStart = Math.max(0, itemCount - visibleCount);
+  const start = Math.max(0, Math.min(
+    Math.floor(scrollTop.value / ITEM_HEIGHT) - BUFFER_SIZE,
+    maxStart
+  ));
+  const end = Math.min(itemCount, start + visibleCount);
   return { start, end };
 });
 
@@ -92,12 +122,82 @@ const visibleItems = computed(() => {
   return props.visibleNodes.slice(visibleRange.value.start, visibleRange.value.end);
 });
 
-const totalHeight = computed(() => props.visibleNodes.length * ITEM_HEIGHT);
-const offsetY = computed(() => visibleRange.value.start * ITEM_HEIGHT);
+const totalHeight = computed(() => {
+  const count = props.totalNodes > 0 ? props.totalNodes : props.visibleNodes.length;
+  if (count === 0) {
+    return containerHeight.value;
+  }
+  return count * ITEM_HEIGHT;
+});
+
+const offsetY = computed(() => {
+  return visibleRange.value.start * ITEM_HEIGHT;
+});
+
+const currentMatchNodeId = computed(() => {
+  if (!props.searchQuery.trim() || props.searchMatchCount === 0) {
+    return null;
+  }
+  const matchNodes = props.visibleNodes.filter(node => {
+    const q = props.searchQuery.toLowerCase();
+    return node.key?.toLowerCase().includes(q) ||
+      node.displayValue?.toLowerCase().includes(q) ||
+      (node.fullValue?.toLowerCase() || '').includes(q);
+  });
+  if (matchNodes.length > 0 && props.searchMatchIndex > 0 && props.searchMatchIndex <= matchNodes.length) {
+    return matchNodes[props.searchMatchIndex - 1].id;
+  }
+  return null;
+});
+
+watch(() => props.currentFile, () => {
+  if (containerRef.value) {
+    containerRef.value.scrollTop = 0;
+    scrollTop.value = 0;
+  }
+});
+
+watch(() => props.searchMatchIndex, (newIndex) => {
+  if (newIndex > 0 && containerRef.value) {
+    const matchNodes = props.visibleNodes.filter(node => {
+      const q = props.searchQuery.toLowerCase();
+      return node.key?.toLowerCase().includes(q) ||
+        node.displayValue?.toLowerCase().includes(q) ||
+        (node.fullValue?.toLowerCase() || '').includes(q);
+    });
+    if (matchNodes.length > 0 && newIndex <= matchNodes.length) {
+      const targetNode = matchNodes[newIndex - 1];
+      const nodeIndex = props.visibleNodes.findIndex(n => n.id === targetNode.id);
+      if (nodeIndex !== -1) {
+        const nodeTop = nodeIndex * ITEM_HEIGHT;
+        const nodeBottom = nodeTop + ITEM_HEIGHT;
+        if (nodeTop < scrollTop.value) {
+          containerRef.value.scrollTop = nodeTop;
+        } else if (nodeBottom > scrollTop.value + containerHeight.value) {
+          containerRef.value.scrollTop = nodeBottom - containerHeight.value;
+        }
+      }
+    }
+  }
+});
+
+function highlightMatch(text) {
+  if (!props.searchQuery.trim() || !text) return text;
+  const query = props.searchQuery.toLowerCase();
+  const lowerText = text.toLowerCase();
+  const index = lowerText.indexOf(query);
+  if (index === -1) return text;
+  
+  const before = text.slice(0, index);
+  const match = text.slice(index, index + query.length);
+  const after = text.slice(index + query.length);
+  return { before, match, after, isMatch: true };
+}
 
 function handleScroll(e) {
-  scrollTop.value = e.target.scrollTop;
-  emit('scroll', e.target.scrollTop);
+  const maxScroll = Math.max(0, totalHeight.value - containerHeight.value);
+  scrollTop.value = Math.max(0, Math.min(e.target.scrollTop, maxScroll));
+  emit('scroll', scrollTop.value);
 }
 
 function handleNodeClick(node, e) {
@@ -153,8 +253,22 @@ defineExpose({
         placeholder="搜索 JSON..."
         :value="searchQuery"
         @input="e => emit('search', e.target.value)"
+        @keydown="handleSearchKeydown"
       />
+      <span class="search-counter" v-if="searchQuery && props.searchMatchCount > 0">
+        {{ props.searchMatchIndex }}/{{ props.searchMatchCount }}
+      </span>
       <span class="search-shortcut" v-if="!searchQuery">Ctrl+F</span>
+      <button class="search-btn" v-if="searchQuery" @click="emit('searchPrev')" title="上一个">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M18 15l-6-6-6 6"/>
+        </svg>
+      </button>
+      <button class="search-btn" v-if="searchQuery" @click="emit('searchNext')" title="下一个">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M6 9l6 6 6-6"/>
+        </svg>
+      </button>
       <button class="search-clear" v-if="searchQuery" @click="emit('search', '')">
         <CloseIcon :size="12" />
       </button>
@@ -192,7 +306,11 @@ defineExpose({
         </div>
       </div>
 
-      <div v-else-if="parseStatus === 'parsing'" class="parsing-status">
+      <!-- ============================================ -->
+      <!-- 重要：解析状态优先显示，确保整个内容区域在解析时显示加载状态 -->
+      <!--       直到解析完成才显示内容 -->
+      <!-- ============================================ -->
+      <div v-if="parseStatus === 'parsing'" class="parsing-status">
         <span class="spinner">⟳</span>
         <span>解析中...</span>
       </div>
@@ -215,7 +333,7 @@ defineExpose({
                 :key="node.id"
                 class="tree-node"
                 :class="{
-                  'is-highlighted': highlightedNodeId === node.id,
+                  'is-highlighted': currentMatchNodeId === node.id,
                   'is-root': node.isRoot
                 }"
                 :style="{ paddingLeft: (node.depth * 20) + 'px' }"
@@ -235,7 +353,10 @@ defineExpose({
                   v-if="!node.isRoot"
                   class="node-key"
                 >
-                  {{ node.key }}
+                  <template v-if="highlightMatch(node.key)?.isMatch">
+                    {{ highlightMatch(node.key).before }}<mark class="search-match">{{ highlightMatch(node.key).match }}</mark>{{ highlightMatch(node.key).after }}
+                  </template>
+                  <template v-else>{{ node.key }}</template>
                 </span>
                 <span
                   v-if="!node.isRoot && node.type !== 'object' && node.type !== 'array'"
@@ -243,11 +364,19 @@ defineExpose({
 
                 <template v-if="node.type === 'string'">
                   <span class="node-value string-value" :title="node.fullValue">
-                    "{{ node.displayValue }}"
+                    <template v-if="highlightMatch(node.displayValue)?.isMatch">
+                      "{{ highlightMatch(node.displayValue).before }}<mark class="search-match">{{ highlightMatch(node.displayValue).match }}</mark>{{ highlightMatch(node.displayValue).after }}"
+                    </template>
+                    <template v-else>"{{ node.displayValue }}"</template>
                   </span>
                 </template>
                 <template v-else-if="node.type === 'number'">
-                  <span class="node-value number-value">{{ node.displayValue }}</span>
+                  <span class="node-value number-value">
+                    <template v-if="highlightMatch(node.displayValue)?.isMatch">
+                      {{ highlightMatch(node.displayValue).before }}<mark class="search-match">{{ highlightMatch(node.displayValue).match }}</mark>{{ highlightMatch(node.displayValue).after }}
+                    </template>
+                    <template v-else>{{ node.displayValue }}</template>
+                  </span>
                 </template>
                 <template v-else-if="node.type === 'boolean'">
                   <span class="node-value boolean-value">{{ node.displayValue }}</span>
@@ -269,11 +398,16 @@ defineExpose({
             </div>
           </div>
         </div>
+        <!-- ============================================ -->
+        <!-- 重要：只有在有数据或正在解析时才显示Minimap -->
+        <!-- ============================================ -->
         <Minimap
+          v-if="visibleNodes.length > 0 || parseStatus === 'parsing'"
           :visibleNodes="visibleNodes"
           :scrollTop="scrollTop"
           :viewportHeight="containerHeight"
           :totalHeight="totalHeight"
+          :isParsing="parseStatus === 'parsing'"
           @jump="handleMinimapJump"
         />
       </div>
@@ -332,6 +466,35 @@ defineExpose({
   border-radius: 4px;
   color: var(--text-secondary);
   font-family: monospace;
+}
+
+.search-counter {
+  font-size: 11px;
+  padding: 2px 6px;
+  background: var(--accent);
+  color: white;
+  border-radius: 4px;
+  font-family: monospace;
+  margin-right: 4px;
+}
+
+.search-btn {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 3px;
+  cursor: pointer;
+  margin-right: 2px;
+}
+
+.search-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .search-clear {
@@ -588,6 +751,18 @@ defineExpose({
 
 .tree-node.is-root {
   font-weight: 500;
+}
+
+.search-match {
+  background: #fef08a;
+  color: #000;
+  border-radius: 2px;
+  padding: 0 2px;
+}
+
+[data-theme="dark"] .search-match {
+  background: #a16207;
+  color: #fff;
 }
 
 .toggle-btn {

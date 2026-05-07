@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 
 const props = defineProps({
   visibleNodes: {
@@ -17,15 +17,30 @@ const props = defineProps({
   totalHeight: {
     type: Number,
     default: 1000
+  },
+  isParsing: {
+    type: Boolean,
+    default: false
   }
 })
 
 const emit = defineEmits(['jump'])
 
 const minimapRef = ref(null)
+const canvasRef = ref(null)
 const isDragging = ref(false)
 
-const maxScroll = computed(() => Math.max(0, props.totalHeight - props.viewportHeight))
+let renderFrameId = null
+let isRendering = false
+let lastRenderTime = 0
+let loadingAnimationFrameId = null
+
+const effectiveTotalHeight = computed(() => {
+  const count = props.totalNodes > 0 ? props.totalNodes : props.visibleNodes.length
+  return count * 28
+})
+
+const maxScroll = computed(() => Math.max(0, effectiveTotalHeight.value - props.viewportHeight))
 
 const scrollRatio = computed(() => {
   if (maxScroll.value <= 0) return 0
@@ -33,7 +48,7 @@ const scrollRatio = computed(() => {
 })
 
 const sliderStyle = computed(() => {
-  const viewportRatio = Math.min(props.viewportHeight / props.totalHeight, 1)
+  const viewportRatio = Math.min(props.viewportHeight / effectiveTotalHeight.value, 1)
   const viewportPercent = viewportRatio * 96
   const maxTop = 96 - viewportPercent
   const top = scrollRatio.value * maxTop
@@ -45,64 +60,233 @@ const sliderStyle = computed(() => {
   }
 })
 
-const maxNodes = 400
-const sampleStep = computed(() => {
-  if (!props.visibleNodes || props.visibleNodes.length <= maxNodes) return 1
-  return Math.floor(props.visibleNodes.length / maxNodes)
-})
+const MAX_NODES_TO_RENDER = 2000
+const RENDER_THROTTLE_MS = 32
 
-const sampledNodes = computed(() => {
-  if (!props.visibleNodes || props.visibleNodes.length === 0) return []
-  const step = sampleStep.value
-  const result = []
-  for (let i = 0; i < props.visibleNodes.length; i += step) {
-    result.push({
-      ...props.visibleNodes[i],
-      _originalIndex: i
-    })
-  }
-  return result
-})
-
-function getNodeStyle(node, index) {
-  if (props.totalHeight <= 0) {
-    return {
-      top: '0%',
-      left: '4px',
-      width: '20px',
-      backgroundColor: '#888888',
-      opacity: 0.9
+function scheduleDrawMinimap() {
+  const now = performance.now()
+  if (now - lastRenderTime < RENDER_THROTTLE_MS) {
+    if (!renderFrameId) {
+      renderFrameId = requestAnimationFrame(() => {
+        renderFrameId = null
+        drawMinimap()
+      })
     }
+    return
   }
+  lastRenderTime = now
+  drawMinimap()
+}
 
-  const actualIndex = node._originalIndex !== undefined ? node._originalIndex : index
-  const y = (actualIndex * 28 / props.totalHeight) * 96
-  const depthWidth = Math.min(node.depth * 3, 20)
-
-  let bgColor = '#888888'
-  let alpha = 0.9
-
-  if (node.type === 'object' || node.type === 'object_start') {
-    bgColor = '#007acc'
-    alpha = 1
-  } else if (node.type === 'array' || node.type === 'array_start') {
-    bgColor = '#4ec9b0'
-    alpha = 1
-  } else if (node.type === 'string') {
-    bgColor = '#ce9178'
-  } else if (node.type === 'number') {
-    bgColor = '#b5cea8'
-  } else if (node.type === 'boolean' || node.type === 'null') {
-    bgColor = '#569cd6'
+function drawMinimap() {
+  if (isRendering) return
+  isRendering = true
+  
+  try {
+    const canvas = canvasRef.value
+    if (!canvas) return
+    
+    const rect = canvas.getBoundingClientRect()
+    const dpr = window.devicePixelRatio || 1
+    
+    canvas.width = (rect.width - 8) * dpr
+    canvas.height = rect.height * dpr
+    
+    const ctx = canvas.getContext('2d')
+    ctx.scale(dpr, dpr)
+    
+    const width = rect.width - 8
+    const height = rect.height
+    
+    ctx.clearRect(0, 0, width, height)
+    
+    const bgColor = getComputedStyle(canvas).getPropertyValue('--bg-primary') || '#0d0d15'
+    ctx.fillStyle = bgColor
+    ctx.fillRect(0, 0, width, height)
+    
+    if (!props.visibleNodes || props.visibleNodes.length === 0) {
+      // ============================================
+      // 当没有数据时，根据parseStatus决定显示内容
+      // - parsing状态：显示加载动画
+      // - 其他状态：不显示任何内容（保持空白）
+      // ============================================
+      if (props.isParsing) {
+        const centerX = width / 2
+        const centerY = height / 2
+        const radius = 8
+        const lineWidth = 2
+        
+        ctx.strokeStyle = '#4a90d9'
+        ctx.lineWidth = lineWidth
+        ctx.lineCap = 'round'
+        
+        const time = Date.now() / 1000
+        const startAngle = -Math.PI / 2
+        const endAngle = startAngle + (Math.PI * 2 * (time % 1))
+        
+        ctx.beginPath()
+        ctx.arc(centerX, centerY, radius, startAngle, endAngle)
+        ctx.stroke()
+        
+        ctx.fillStyle = '#666'
+        ctx.font = '10px monospace'
+        ctx.textAlign = 'center'
+        ctx.fillText('Loading...', width / 2, height / 2 + 20)
+        
+        // 持续更新加载动画
+        loadingAnimationFrameId = requestAnimationFrame(() => {
+          loadingAnimationFrameId = null
+          drawMinimap()
+        })
+      }
+      // 非解析状态：保持空白，不显示任何内容
+      return
+    }
+    
+    const totalCount = props.totalNodes > 0 ? props.totalNodes : props.visibleNodes.length
+    const rowHeight = height / Math.max(1, totalCount)
+    
+    if (totalCount > MAX_NODES_TO_RENDER) {
+      drawSampledOptimized(ctx, width, height, rowHeight, totalCount)
+    } else {
+      drawDetailed(ctx, width, height, rowHeight)
+    }
+  } finally {
+    isRendering = false
   }
+}
 
-  return {
-    top: `${Math.min(y, 96)}%`,
-    left: `${depthWidth}px`,
-    width: `${Math.max(24 - depthWidth, 2)}px`,
-    backgroundColor: bgColor,
-    opacity: alpha
+function drawSampledOptimized(ctx, width, height, rowHeight, totalNodes) {
+  const nodes = props.visibleNodes
+  
+  const effectiveSampleCount = Math.min(totalNodes, MAX_NODES_TO_RENDER)
+  const step = Math.max(1, Math.floor(totalNodes / effectiveSampleCount))
+  
+  const barWidth = Math.max(width - 8, 2)
+  
+  for (let i = 0; i < totalNodes; i += step) {
+    const node = nodes[i]
+    if (!node) continue
+    
+    const y = i * rowHeight
+    const h = Math.min(step * rowHeight, 3)
+    
+    const depthOffset = Math.min((node.depth || 0) * 2, width * 0.35)
+    
+    let color = '#b5cea8'
+    let alpha = 0.6
+    
+    if (node.type === 4 || node.type === 5 || node.type === 'array' || node.type === 'object') {
+      color = '#569cd6'
+      alpha = 0.4
+    } else if (node.type === 3 || node.type === 'string') {
+      color = '#ce9178'
+      alpha = 0.7
+    } else if (node.type === 2 || node.type === 'number') {
+      color = '#89d185'
+      alpha = 0.7
+    } else if (node.type === 1 || node.type === 0 || node.type === 'boolean' || node.type === 'null') {
+      color = '#569cd6'
+      alpha = 0.6
+    }
+    
+    ctx.fillStyle = color
+    ctx.globalAlpha = alpha
+    ctx.fillRect(4 + depthOffset, y, barWidth - depthOffset, h)
   }
+  
+  ctx.globalAlpha = 1
+}
+
+function drawHeatmap(ctx, width, height, nodes) {
+  const bucketCount = Math.min(50, height)
+  const bucketSize = nodes.length / bucketCount
+  
+  for (let i = 0; i < bucketCount; i++) {
+    const startIdx = Math.floor(i * bucketSize)
+    const endIdx = Math.floor((i + 1) * bucketSize)
+    
+    let objCount = 0
+    let strCount = 0
+    let numCount = 0
+    
+    for (let j = startIdx; j < endIdx && j < nodes.length; j++) {
+      const node = nodes[j]
+      if (!node || !node.type) continue
+      if (node.type === 'object' || node.type === 'array' || node.type === 'object_start' || node.type === 'array_start') {
+        objCount++
+      } else if (node.type === 'string') {
+        strCount++
+      } else if (node.type === 'number') {
+        numCount++
+      }
+    }
+    
+    const total = endIdx - startIdx
+    const objRatio = total > 0 ? objCount / total : 0
+    const strRatio = total > 0 ? strCount / total : 0
+    const numRatio = total > 0 ? numCount / total : 0
+    
+    let r, g, b
+    if (strRatio > 0.5) {
+      r = Math.floor(206)
+      g = Math.floor(145)
+      b = Math.floor(120)
+    } else if (numRatio > 0.5) {
+      r = Math.floor(137)
+      g = Math.floor(209)
+      b = Math.floor(133)
+    } else if (objRatio > 0.5) {
+      r = Math.floor(86)
+      g = Math.floor(156)
+      b = Math.floor(214)
+    } else {
+      r = Math.floor(181)
+      g = Math.floor(206)
+      b = Math.floor(168)
+    }
+    
+    ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.5)`
+    ctx.fillRect(4, (i / bucketCount) * height, width - 8, height / bucketCount)
+  }
+  
+  ctx.globalAlpha = 1
+}
+
+function drawSampled(ctx, width, height, rowHeight) {
+  drawSampledOptimized(ctx, width, height, rowHeight, props.visibleNodes.length)
+}
+
+function drawDetailed(ctx, width, height, rowHeight) {
+  props.visibleNodes.forEach((node, index) => {
+    const y = index * rowHeight
+    const h = Math.max(rowHeight, 1.5)
+    
+    const depthOffset = Math.min(node.depth * 3, width * 0.35)
+    
+    let color = '#b5cea8'
+    let alpha = 0.6
+    
+    if (node.type === 4 || node.type === 5 || node.type === 'array' || node.type === 'object') {
+      color = '#569cd6'
+      alpha = 0.4
+    } else if (node.type === 3 || node.type === 'string') {
+      color = '#ce9178'
+      alpha = 0.7
+    } else if (node.type === 2 || node.type === 'number') {
+      color = '#89d185'
+      alpha = 0.7
+    } else if (node.type === 1 || node.type === 0 || node.type === 'boolean' || node.type === 'null') {
+      color = '#569cd6'
+      alpha = 0.6
+    }
+    
+    ctx.fillStyle = color
+    ctx.globalAlpha = alpha
+    ctx.fillRect(4 + depthOffset, y, Math.max(width - depthOffset - 8, 2), h)
+  })
+  
+  ctx.globalAlpha = 1
 }
 
 function handleClick(e) {
@@ -140,26 +324,48 @@ function stopDrag() {
   document.removeEventListener('mousemove', onDrag)
   document.removeEventListener('mouseup', stopDrag)
 }
+
+watch(() => props.visibleNodes, () => {
+  scheduleDrawMinimap()
+}, { deep: true })
+
+watch(() => props.totalHeight, () => {
+  scheduleDrawMinimap()
+})
+
+onMounted(() => {
+  scheduleDrawMinimap()
+})
+
+onUnmounted(() => {
+  if (renderFrameId) {
+    cancelAnimationFrame(renderFrameId)
+    renderFrameId = null
+  }
+  // ============================================
+  // 取消加载动画
+  // ============================================
+  if (loadingAnimationFrameId) {
+    cancelAnimationFrame(loadingAnimationFrameId)
+    loadingAnimationFrameId = null
+  }
+  document.removeEventListener('mousemove', onDrag)
+  document.removeEventListener('mouseup', stopDrag)
+})
 </script>
 
 <template>
   <div class="minimap-wrapper">
     <div ref="minimapRef" class="minimap" @click="handleClick">
       <div class="minimap-content">
-        <div
-          v-for="(node, index) in sampledNodes"
-          :key="index"
-          class="minimap-node"
-          :style="getNodeStyle(node, index)"
-        />
+        <canvas ref="canvasRef" class="minimap-canvas"></canvas>
       </div>
       <div
         class="minimap-slider"
         :style="sliderStyle"
         @mousedown="startDrag"
       >
-        <div class="slider-top"></div>
-        <div class="slider-bottom"></div>
+        <div class="slider-overlay"></div>
       </div>
     </div>
   </div>
@@ -175,8 +381,9 @@ function stopDrag() {
 .minimap {
   width: 100%;
   height: 100%;
-  background: var(--bg-primary);
-  border-left: 1px solid var(--border);
+  background: #0d0d15;
+  border-left: 1px solid #1e1e2e;
+  padding: 4px 0;
   position: relative;
   cursor: pointer;
   overflow: hidden;
@@ -185,43 +392,62 @@ function stopDrag() {
 
 .minimap-content {
   position: absolute;
-  top: 0;
+  top: 4px;
   left: 0;
   right: 0;
-  bottom: 0;
-  height: 100%;
+  bottom: 4px;
+  height: calc(100% - 8px);
 }
 
-.minimap-node {
-  position: absolute;
-  height: 2px;
-  border-radius: 1px;
+.minimap-canvas {
+  width: 100%;
+  height: 100%;
 }
 
 .minimap-slider {
   position: absolute;
-  left: 0;
-  right: 0;
-  background: rgba(0, 122, 204, 0.2);
-  border: 1px solid rgba(0, 122, 204, 0.4);
+  left: 2px;
+  right: 2px;
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 2px;
   cursor: ns-resize;
-  z-index: 10;
+  z-index: 100;
+  pointer-events: auto;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.1);
 }
 
-.slider-top,
-.slider-bottom {
+.slider-overlay {
   position: absolute;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: rgba(0, 122, 204, 0.6);
+  inset: 0;
+  background: rgba(86, 156, 214, 0.08);
+  border-radius: 2px;
 }
 
-.slider-top {
-  top: 0;
+.minimap-slider:hover {
+  background: rgba(255, 255, 255, 0.25);
+  border-color: rgba(255, 255, 255, 0.6);
 }
 
-.slider-bottom {
-  bottom: 0;
+.minimap-slider:active {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+[data-theme="light"] .minimap {
+  background: #f1f3f4;
+  border-left: 1px solid #e5e5e5;
+}
+
+[data-theme="light"] .minimap-slider {
+  border-color: rgba(0, 0, 0, 0.2);
+  background: rgba(0, 0, 0, 0.05);
+}
+
+[data-theme="light"] .minimap-slider:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme="light"] .slider-overlay {
+  background: rgba(26, 115, 232, 0.15);
 }
 </style>

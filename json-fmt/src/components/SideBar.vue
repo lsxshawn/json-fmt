@@ -1,5 +1,8 @@
 <script setup>
+import { ref } from 'vue';
 import PlusIcon from './icons/PlusIcon.vue';
+
+const fileInputRef = ref(null);
 
 const props = defineProps({
   files: {
@@ -19,6 +22,10 @@ function formatFileSize(bytes) {
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function openFileClick() {
+  fileInputRef.value?.click();
 }
 </script>
 
@@ -56,23 +63,33 @@ function formatFileSize(bytes) {
           </svg>
           <span class="file-name" :title="file.name">{{ file.name }}</span>
           <span class="file-size">{{ formatFileSize(file.size) }}</span>
+          <button 
+            class="file-close" 
+            @click.stop="emit('deleteFile', file.id)"
+            title="关闭文件"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 6L6 18M6 6l12 12"/>
+            </svg>
+          </button>
         </div>
       </div>
     </div>
 
     <div class="sidebar-footer">
-      <label class="footer-btn">
+      <button class="footer-btn" @click="openFileClick">
         <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
         </svg>
         <span>打开文件</span>
         <input
+          ref="fileInputRef"
           type="file"
           accept=".json,application/json"
           multiple
           @change="e => emit('openFiles', Array.from(e.target.files))"
         />
-      </label>
+      </button>
       <button class="footer-btn" :disabled="files.length === 0" @click="emit('clearCache')">
         <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
@@ -198,6 +215,10 @@ function formatFileSize(bytes) {
   background: var(--bg-hover);
 }
 
+.file-item:hover .file-close {
+  opacity: 1;
+}
+
 .file-item.active {
   background: var(--bg-active);
   border-left: 2px solid var(--accent);
@@ -220,14 +241,35 @@ function formatFileSize(bytes) {
   font-size: 11px;
   color: var(--text-secondary);
   flex-shrink: 0;
+  margin-right: 4px;
+}
+
+.file-close {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 150ms;
+}
+
+.file-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .sidebar-footer {
-  padding: 8px 12px;
+  padding: 8px;
   border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
   position: sticky;
   bottom: 0;
   background: inherit;
@@ -236,8 +278,9 @@ function formatFileSize(bytes) {
 .footer-btn {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
-  padding: 5px 8px;
+  padding: 6px 12px;
   border: none;
   background: transparent;
   color: var(--text-secondary);
@@ -245,12 +288,6 @@ function formatFileSize(bytes) {
   border-radius: 4px;
   cursor: pointer;
   transition: all 150ms;
-}
-
-.footer-btn:first-child {
-  margin-bottom: 2px;
-  padding-bottom: 7px;
-  border-bottom: 1px solid var(--border);
 }
 
 .footer-btn:hover {

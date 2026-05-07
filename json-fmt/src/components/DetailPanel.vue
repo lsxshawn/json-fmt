@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch } from 'vue';
+import { ref, watch, computed } from 'vue';
 
 const props = defineProps({
   node: {
@@ -24,6 +24,26 @@ watch(() => props.node, (newNode) => {
   }
 });
 
+const fullPath = computed(() => {
+  if (!props.node) return '';
+  const path = props.node.pathStr || formatPath(props.node.path);
+  return path;
+});
+
+const displayPath = computed(() => {
+  const path = fullPath.value;
+  if (!path) return 'root';
+  
+  if (path.length > 50) {
+    const parts = path.split('.');
+    if (parts.length > 4) {
+      return parts.slice(0, 2).join('.') + '...' + parts.slice(-2).join('.');
+    }
+    return path.slice(0, 25) + '...' + path.slice(-20);
+  }
+  return path;
+});
+
 function startEdit() {
   if (props.node && (props.node.type === 'string' || props.node.type === 'number' || props.node.type === 'boolean')) {
     editValue.value = props.node.displayValue || '';
@@ -45,67 +65,34 @@ function cancelEdit() {
   }
 }
 
-function getTypeColor(type) {
-  const colors = {
-    string: 'var(--json-string)',
-    number: 'var(--json-number)',
-    boolean: 'var(--json-boolean)',
-    null: 'var(--json-null)',
-    object: 'var(--json-key)',
-    array: 'var(--json-key)'
-  };
-  return colors[type] || 'var(--vscode-text)';
+function copyToClipboard(text, type) {
+  navigator.clipboard.writeText(text).then(() => {
+    console.log(`Copied ${type} to clipboard`);
+  });
+}
+
+function copyPath() {
+  copyToClipboard(fullPath.value, 'path');
 }
 
 function formatPath(path) {
   if (!path || path.length === 0) return 'root';
   
   if (typeof path === 'string') {
-    const parts = path.split('.');
-    let result = [];
-    let lastNonArrayPart = '';
-    
-    for (let part of parts) {
-      if (!part.match(/^\[\d+\]$/)) {
-        result.push(part);
-        lastNonArrayPart = part;
-      }
-    }
-    
-    let lastArrayIndex = -1;
-    for (let i = parts.length - 1; i >= 0; i--) {
-      if (parts[i].match(/^\[\d+\]$/)) {
-        lastArrayIndex = i;
-        break;
-      }
-    }
-    
-    if (lastArrayIndex >= 0) {
-      const lastArrayPart = parts[lastArrayIndex];
-      if (result.length === 0) {
-        result.push(lastArrayPart);
-      } else {
-        result[result.length - 1] += lastArrayPart;
-      }
-    }
-    
-    return result.join('.');
+    return path;
   }
   
   let result = [];
   for (let i = 0; i < path.length; i++) {
     const p = path[i];
-    if (typeof p !== 'number') {
-      result.push(p);
-    }
-  }
-  
-  const lastElement = path[path.length - 1];
-  if (typeof lastElement === 'number') {
-    if (result.length === 0) {
-      result.push('[' + lastElement + ']');
+    if (typeof p === 'number') {
+      if (result.length > 0) {
+        result[result.length - 1] += '[' + p + ']';
+      } else {
+        result.push('[' + p + ']');
+      }
     } else {
-      result[result.length - 1] += '[' + lastElement + ']';
+      result.push(p);
     }
   }
   
@@ -117,70 +104,81 @@ function formatPath(path) {
   <div v-if="visible" class="detail-panel">
     <div class="panel-header">
       <span class="panel-title">属性</span>
-      <button class="close-btn" @click="emit('close')">×</button>
+      <button class="panel-close" @click="emit('close')">×</button>
     </div>
 
     <div v-if="node" class="panel-content">
-      <div class="detail-section">
-        <div class="detail-row">
-          <span class="detail-label">属性名</span>
-          <span class="detail-value key-value">{{ node.key || '(root)' }}</span>
-        </div>
+      <div class="property-item">
+        <div class="property-label">属性名</div>
+        <div class="property-value key-value">{{ node.key || '(root)' }}</div>
+      </div>
 
-        <div class="detail-row">
-          <span class="detail-label">值</span>
-          <div class="value-container">
-            <template v-if="isEditing">
-              <input
-                v-model="editValue"
-                class="edit-input"
-                @keyup.enter="saveEdit"
-                @keyup.escape="cancelEdit"
-              />
-              <div class="edit-actions">
-                <button class="edit-btn save" @click="saveEdit">✓</button>
-                <button class="edit-btn cancel" @click="cancelEdit">×</button>
-              </div>
-            </template>
-            <template v-else>
-              <span
-                class="detail-value"
-                :style="{ color: getTypeColor(node.type) }"
-                @dblclick="startEdit"
-              >
-                {{ node.displayValue || '(empty)' }}
-              </span>
-              <button
-                v-if="node.type === 'string' || node.type === 'number' || node.type === 'boolean'"
-                class="edit-trigger"
-                title="双击编辑"
-                @click="startEdit"
-              >✎</button>
-            </template>
+      <div class="property-item">
+        <div class="property-label">值</div>
+        <template v-if="isEditing">
+          <input
+            v-model="editValue"
+            class="property-value editable"
+            @keyup.enter="saveEdit"
+            @keyup.escape="cancelEdit"
+            autofocus
+          />
+        </template>
+        <template v-else>
+          <div
+            class="property-value"
+            :class="{ editable: node.type === 'string' || node.type === 'number' || node.type === 'boolean' }"
+            @dblclick="startEdit"
+          >
+            {{ node.displayValue || '(empty)' }}
+            <span v-if="node.type === 'string' || node.type === 'number' || node.type === 'boolean'" class="edit-hint">双击编辑</span>
           </div>
-        </div>
+        </template>
+      </div>
 
-        <div class="detail-row">
-          <span class="detail-label">类型</span>
-          <span class="detail-value type-badge" :style="{ color: getTypeColor(node.type) }">
-            {{ node.type }}
-          </span>
-        </div>
+      <div class="property-item">
+        <div class="property-label">类型</div>
+        <span class="type-badge" :class="node.type">
+          {{ node.type }}
+        </span>
+      </div>
 
-        <div class="detail-row">
-          <span class="detail-label">路径</span>
-          <span class="detail-value path-value" :title="node.pathStr">
-            {{ formatPath(node.pathStr) }}
-          </span>
-        </div>
-
-        <div v-if="node.childCount !== undefined" class="detail-row">
-          <span class="detail-label">
-            {{ node.type === 'array' ? '数组长度' : '对象键数' }}
-          </span>
-          <span class="detail-value">{{ node.childCount }}</span>
+      <div class="property-item">
+        <div class="property-label">路径</div>
+        <div class="property-path-wrapper">
+          <div class="property-path" :title="fullPath">{{ displayPath }}</div>
+          <button class="path-copy" @click="copyPath" title="复制完整路径">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+          </button>
         </div>
       </div>
+
+      <div v-if="node.childCount !== undefined" class="property-item">
+        <div class="property-label">
+          {{ node.type === 'array' ? '数组长度' : '对象键数' }}
+        </div>
+        <div class="property-value">{{ node.childCount }}</div>
+      </div>
+    </div>
+
+    <div v-if="node" class="panel-actions">
+      <button class="action-btn" @click="copyToClipboard(node.displayValue || '', 'value')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>
+        复制值
+      </button>
+      <button class="action-btn" @click="copyToClipboard(formatPath(node.pathStr || node.path), 'path')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>
+        复制路径
+      </button>
     </div>
 
     <div v-else class="panel-empty">
@@ -192,48 +190,52 @@ function formatPath(path) {
 <style scoped>
 .detail-panel {
   width: 280px;
-  background: var(--vscode-sidebar-bg);
-  border-left: 1px solid var(--vscode-border);
+  background: #111118;
+  border-left: 1px solid #1e1e2e;
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
 }
 
 .panel-header {
+  height: 40px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px 8px;
-  font-size: 11px;
+  padding: 0 16px;
+  border-bottom: 1px solid #1e1e2e;
+}
+
+.panel-title {
+  font-size: 13px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--vscode-text-secondary);
-  border-bottom: 1px solid var(--vscode-border);
+  color: #d4c5a9;
 }
 
-.close-btn {
-  background: transparent;
+.panel-close {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border: none;
-  color: var(--vscode-text-secondary);
+  background: transparent;
+  color: #5a5a6e;
+  border-radius: 4px;
   cursor: pointer;
-  font-size: 16px;
-  font-family: var(--font-ui);
-  font-weight: 400;
-  padding: 0 4px;
-  border-radius: 2px;
-  transition: var(--transition-fast);
+  font-size: 18px;
+  line-height: 1;
 }
 
-.close-btn:hover {
-  background: var(--vscode-hover-bg);
-  color: var(--vscode-text);
+.panel-close:hover {
+  background: #1e1e2e;
+  color: #d4c5a9;
 }
 
 .panel-content {
   flex: 1;
   overflow-y: auto;
-  padding: 12px;
+  padding: 12px 0;
 }
 
 .panel-empty {
@@ -241,128 +243,227 @@ function formatPath(path) {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--vscode-text-secondary);
+  color: #5a5a6e;
   font-size: 12px;
 }
 
-.detail-section {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+.property-item {
+  padding: 12px 16px;
+  border-bottom: 1px solid #1a1a22;
 }
 
-.detail-row {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.property-item:last-child {
+  border-bottom: none;
 }
 
-.detail-label {
+.property-label {
   font-size: 11px;
-  color: var(--vscode-text-secondary);
   text-transform: uppercase;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.5px;
+  color: #5a5a6e;
+  margin-bottom: 8px;
 }
 
-.detail-value {
+.property-value {
   font-size: 13px;
-  color: var(--vscode-text);
-  font-family: var(--font-code);
+  color: #d4c5a9;
   word-break: break-all;
+  line-height: 1.5;
+}
+
+.property-value.editable {
+  padding: 8px 12px;
+  background: #0d0d15;
+  border: 1px solid #1e1e2e;
+  border-radius: 4px;
+  font-family: 'Consolas', monospace;
+  min-height: 32px;
+  cursor: text;
+  color: #d4c5a9;
+}
+
+.property-value.editable:focus {
+  border-color: #c8b88a;
+  outline: none;
 }
 
 .key-value {
-  color: var(--json-key);
+  color: #9cdcfe;
+}
+
+.edit-hint {
+  font-size: 11px;
+  color: #5a5a6e;
+  margin-left: 8px;
+  opacity: 0;
+  transition: opacity 150ms;
+}
+
+.property-value:hover .edit-hint {
+  opacity: 1;
 }
 
 .type-badge {
   display: inline-block;
   padding: 2px 8px;
-  background: var(--vscode-selection-bg);
+  background: #1e1e2e;
   border-radius: 4px;
   font-size: 12px;
-  width: fit-content;
+  font-family: 'Consolas', monospace;
+  color: #c8b88a;
 }
 
-.path-value {
-  font-size: 11px;
-  color: var(--vscode-text-secondary);
-  background: var(--vscode-bg);
-  padding: 4px 8px;
-  border-radius: 4px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+.type-badge.string { color: #89d185; }
+.type-badge.number { color: #b5cea8; }
+.type-badge.boolean { color: #569cd6; }
+.type-badge.null { color: #5a5a6e; }
+.type-badge.array { color: #ce9178; }
+.type-badge.object { color: #9cdcfe; }
 
-.value-container {
+.property-path-wrapper {
   display: flex;
   align-items: flex-start;
   gap: 8px;
 }
 
-.edit-input {
+.property-path {
   flex: 1;
-  background: var(--vscode-bg);
-  border: 1px solid var(--vscode-accent);
-  color: var(--vscode-text);
-  padding: 4px 8px;
+  font-size: 12px;
+  font-family: 'Consolas', monospace;
+  color: #5a5a6e;
+  background: #0d0d15;
+  padding: 8px 12px;
   border-radius: 4px;
-  font-size: 13px;
-  font-family: var(--font-code);
-  outline: none;
+  word-break: break-all;
+  line-height: 1.6;
 }
 
-.edit-actions {
+.path-copy {
+  width: 28px;
+  height: 28px;
   display: flex;
-  gap: 4px;
-}
-
-.edit-btn {
-  background: transparent;
-  border: 1px solid var(--vscode-border);
-  color: var(--vscode-text);
-  width: 24px;
-  height: 24px;
-  border-radius: 2px;
-  cursor: pointer;
-  font-size: 13px;
-  font-family: var(--font-ui);
-  font-weight: 400;
-  transition: var(--transition-fast);
-}
-
-.edit-btn:hover {
-  background: var(--vscode-hover-bg);
-}
-
-.edit-btn.save {
-  border-color: var(--vscode-success);
-  color: var(--vscode-success);
-}
-
-.edit-btn.cancel {
-  border-color: var(--vscode-error);
-  color: var(--vscode-error);
-}
-
-.edit-trigger {
-  background: transparent;
+  align-items: center;
+  justify-content: center;
   border: none;
-  color: var(--vscode-text-secondary);
+  background: transparent;
+  color: #5a5a6e;
+  border-radius: 4px;
   cursor: pointer;
-  font-size: 13px;
-  font-family: var(--font-ui);
-  font-weight: 400;
-  padding: 2px 4px;
-  opacity: 0;
-  transition: var(--transition-fast);
+  flex-shrink: 0;
+  margin-top: 4px;
 }
 
-.value-container:hover .edit-trigger {
-  opacity: 1;
+.path-copy:hover {
+  background: #1e1e2e;
+  color: #c8b88a;
 }
 
-.edit-trigger:hover {
-  color: var(--vscode-accent);
+.panel-actions {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid #1e1e2e;
+}
+
+.action-btn {
+  flex: 1;
+  padding: 8px 12px;
+  background: transparent;
+  border: 1px solid #2a2a3a;
+  color: #5a5a6e;
+  font-size: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+}
+
+.action-btn:hover {
+  border-color: #c8b88a;
+  color: #c8b88a;
+}
+
+[data-theme="light"] .detail-panel {
+  background: #f8f9fa;
+  border-left: 1px solid #e5e5e5;
+}
+
+[data-theme="light"] .panel-header {
+  border-bottom: 1px solid #e5e5e5;
+}
+
+[data-theme="light"] .panel-title {
+  color: #202124;
+}
+
+[data-theme="light"] .panel-close {
+  color: #5f6368;
+}
+
+[data-theme="light"] .panel-close:hover {
+  background: #e8eaed;
+  color: #202124;
+}
+
+[data-theme="light"] .property-item {
+  border-bottom: 1px solid #e8eaed;
+}
+
+[data-theme="light"] .property-label {
+  color: #80868b;
+}
+
+[data-theme="light"] .property-value {
+  color: #202124;
+}
+
+[data-theme="light"] .property-value.editable {
+  background: #ffffff;
+  border-color: #dadce0;
+}
+
+[data-theme="light"] .property-value.editable:focus {
+  border-color: #1a73e8;
+}
+
+[data-theme="light"] .key-value {
+  color: #1967d2;
+}
+
+[data-theme="light"] .type-badge {
+  background: #e8eaed;
+}
+
+[data-theme="light"] .type-badge.string { color: #188038; }
+[data-theme="light"] .type-badge.number { color: #188038; }
+[data-theme="light"] .type-badge.boolean { color: #1967d2; }
+[data-theme="light"] .type-badge.null { color: #80868b; }
+[data-theme="light"] .type-badge.array { color: #c5221f; }
+[data-theme="light"] .type-badge.object { color: #1967d2; }
+
+[data-theme="light"] .property-path {
+  color: #5f6368;
+  background: #f1f3f4;
+}
+
+[data-theme="light"] .panel-actions {
+  border-top: 1px solid #e5e5e5;
+}
+
+[data-theme="light"] .action-btn {
+  border-color: #dadce0;
+  color: #5f6368;
+}
+
+[data-theme="light"] .action-btn:hover {
+  border-color: #1a73e8;
+  color: #1a73e8;
+}
+
+[data-theme="light"] .panel-empty {
+  color: #80868b;
 }
 </style>
