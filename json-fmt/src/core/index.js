@@ -4,3 +4,4 @@ export { VirtualScroller } from './VirtualScroller.js';
 export { LRUCache } from './LRUCache.js';
 export { ErrorHandler } from './ErrorHandler.js';
 export { SearchController } from './SearchController.js';
+export { BlockCacheManager } from './BlockCacheManager.js';

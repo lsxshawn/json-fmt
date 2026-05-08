@@ -38,6 +38,14 @@ const props = defineProps({
   searchMatchCount: {
     type: Number,
     default: 0
+  },
+  memoryIndex: {
+    type: Object,
+    default: null
+  },
+  currentFileText: {
+    type: String,
+    default: ''
   }
 });
 
@@ -107,14 +115,19 @@ const matchCount = computed(() => {
 const currentMatchIndex = ref(0);
 
 const visibleRange = computed(() => {
-  const itemCount = props.visibleNodes.length;
+  const itemCount = props.totalNodes > 0 ? props.totalNodes : props.visibleNodes.length;
   const visibleCount = Math.ceil(containerHeight.value / ITEM_HEIGHT) + BUFFER_SIZE * 2;
   const maxStart = Math.max(0, itemCount - visibleCount);
-  const start = Math.max(0, Math.min(
-    Math.floor(scrollTop.value / ITEM_HEIGHT) - BUFFER_SIZE,
-    maxStart
-  ));
+  const requestedStart = Math.floor(scrollTop.value / ITEM_HEIGHT) - BUFFER_SIZE;
+  const start = Math.max(0, Math.min(requestedStart, maxStart));
   const end = Math.min(itemCount, start + visibleCount);
+  
+  if (props.onNeedNodes) {
+    const bufferStart = Math.max(0, start - BUFFER_SIZE);
+    const bufferEnd = Math.min(itemCount, end + BUFFER_SIZE);
+    props.onNeedNodes(bufferStart, bufferEnd);
+  }
+  
   return { start, end };
 });
 
@@ -227,6 +240,9 @@ function handleKeydown(e) {
     searchInputRef.value?.focus();
   }
 }
+
+watch(() => props.visibleNodes, () => {
+}, { deep: true });
 
 onMounted(() => {
   updateContainerHeight();
@@ -395,10 +411,13 @@ defineExpose({
         <Minimap
           v-if="visibleNodes.length > 0 || parseStatus === 'parsing'"
           :visibleNodes="visibleNodes"
+          :totalNodes="totalNodes"
           :scrollTop="scrollTop"
           :viewportHeight="containerHeight"
           :totalHeight="totalHeight"
           :isParsing="parseStatus === 'parsing'"
+          :memoryIndex="memoryIndex"
+          :content="currentFileText"
           @jump="handleMinimapJump"
         />
       </div>

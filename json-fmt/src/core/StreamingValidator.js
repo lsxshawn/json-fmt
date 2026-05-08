@@ -1,306 +1,143 @@
-export class ValidationError extends Error {
-  constructor(message, line, col, pos) {
-    super(message);
-    this.line = line;
-    this.col = col;
-    this.pos = pos;
-    this.name = 'ValidationError';
-  }
-}
+// src/core/StreamingValidator.js
 
 export class StreamingValidator {
   constructor() {
-    this.reset();
-  }
-
-  reset() {
-    this.state = {
-      depth: 0,
-      inString: false,
-      escape: false,
-      line: 1,
-      col: 1,
-      lastKeyStart: 0,
-      lastKeyLength: 0,
-      inKey: false,
-      expectKey: false,
-      expectColon: false,
-      expectValue: false,
-      afterValue: false
-    };
-    this.index = {
-      lines: new Uint32Array(1000000),
-      linesLength: 1,
-      keys: new Uint32Array(500000),
-      keyPositions: new Uint32Array(500000),
-      keyLengths: new Uint16Array(500000),
-      keysLength: 0,
-      structures: new Uint32Array(100000),
-      structuresLength: 0,
-      errors: [],
-      totalLines: 0,
-      totalKeys: 0,
-      totalStructures: 0,
-      rootType: null,
-      size: 0
-    };
-    this.index.lines[0] = 0;
+    this.MAX_LINES = 5000000;
+    this.MAX_KEYS = 1000000;
+    
+    this.lineStarts = new Uint32Array(this.MAX_LINES);
+    this.keys = new Uint32Array(this.MAX_KEYS);
+    this.keyPos = new Uint32Array(this.MAX_KEYS);
+    this.keyLen = new Uint16Array(this.MAX_KEYS);
+    
+    this.lineCount = 0;
+    this.keyCount = 0;
+    
+    this.depth = 0;
+    this.maxDepth = 0;
+    this.inString = false;
+    this.escape = false;
+    this.line = 0;
+    this.col = 0;
+    this.errors = [];
   }
 
   process(text) {
-    this.reset();
-    this.index.size = text.length;
-    
-    try {
-      JSON.parse(text);
-    } catch (err) {
-      const match = err.message.match(/position (\d+)/);
-      const pos = match ? parseInt(match[1]) : 0;
-      const lines = text.substring(0, pos).split('\n');
-      const line = lines.length;
-      const col = lines[lines.length - 1].length + 1;
-      throw new ValidationError(err.message, line, col, pos);
-    }
-    
-    this._buildIndex(text);
-    
-    return this._createResult();
-  }
-
-  _buildIndex(text) {
     const len = text.length;
-    let pos = 0;
-    let ch;
     
-    while (pos < len) {
-      ch = text.charCodeAt(pos);
-
-      if (this.state.escape) {
-        this.state.escape = false;
-        pos++;
-        this.state.col++;
+    this.lineStarts[0] = 0;
+    
+    for (let i = 0; i < len; i++) {
+      const char = text[i];
+      
+      if (char === '\n') {
+        this.line++;
+        this.col = 0;
+        this.lineStarts[++this.lineCount] = i + 1;
         continue;
       }
-
-      if (this.state.inString) {
-        if (ch === 0x5C) {
-          this.state.escape = true;
-        } else if (ch === 0x22) {
-          this.state.inString = false;
-          if (this.state.inKey) {
-            this.state.lastKeyLength = pos - this.state.lastKeyStart - 1;
-            this._addKey(text);
-            this.state.inKey = false;
-          }
+      this.col++;
+      
+      if (this.inString) {
+        if (this.escape) {
+          this.escape = false;
+        } else if (char === '\\') {
+          this.escape = true;
+        } else if (char === '"') {
+          this.inString = false;
         }
-        pos++;
-        this.state.col++;
         continue;
-      }
-
-      switch (ch) {
-        case 0x20:
-        case 0x09:
-          pos++;
-          this.state.col++;
-          continue;
-
-        case 0x0A:
-          this._addLine(pos + 1);
-          pos++;
-          this.state.line++;
-          this.state.col = 1;
-          continue;
-
-        case 0x0D:
-          if (text.charCodeAt(pos + 1) === 0x0A) {
-            pos++;
-          }
-          this._addLine(pos + 1);
-          pos++;
-          this.state.line++;
-          this.state.col = 1;
-          continue;
-
-        case 0x22:
-          this.state.inString = true;
-          if (this.state.expectKey) {
-            this.state.lastKeyStart = pos;
-            this.state.inKey = true;
-          }
-          pos++;
-          this.state.col++;
-          continue;
-
-        case 0x7B:
-          if (!this.index.rootType) {
-            this.index.rootType = 'object';
-          }
-          this._addStructure('object', 'open', pos);
-          this.state.depth++;
-          this.state.expectKey = true;
-          pos++;
-          this.state.col++;
-          continue;
-
-        case 0x7D:
-          this._addStructure('object', 'close', pos);
-          this.state.depth--;
-          this.state.afterValue = true;
-          pos++;
-          this.state.col++;
-          continue;
-
-        case 0x5B:
-          if (!this.index.rootType) {
-            this.index.rootType = 'array';
-          }
-          this._addStructure('array', 'open', pos);
-          this.state.depth++;
-          this.state.expectValue = true;
-          pos++;
-          this.state.col++;
-          continue;
-
-        case 0x5D:
-          this._addStructure('array', 'close', pos);
-          this.state.depth--;
-          this.state.afterValue = true;
-          pos++;
-          this.state.col++;
-          continue;
-
-        case 0x3A:
-          this.state.expectColon = false;
-          this.state.expectValue = true;
-          pos++;
-          this.state.col++;
-          continue;
-
-        case 0x2C:
-          if (this.state.depth > 0) {
-            const lastStructure = this._getLastStructure();
-            if (lastStructure && lastStructure.type === 'object') {
-              this.state.expectKey = true;
-            } else {
-              this.state.expectValue = true;
-            }
-          }
-          this.state.afterValue = false;
-          pos++;
-          this.state.col++;
-          continue;
-
-        case 0x74:
-        case 0x66:
-        case 0x6E:
-          const keyword = this._readKeyword(text, pos);
-          if (keyword === 'true' || keyword === 'false' || keyword === 'null') {
-            pos += keyword.length;
-            this.state.col += keyword.length;
-            this.state.expectValue = false;
-            this.state.afterValue = true;
-            continue;
-          }
-          break;
-
-        default:
-          if ((ch >= 0x30 && ch <= 0x39) || ch === 0x2D || ch === 0x2E) {
-            const numLen = this._readNumber(text, pos);
-            pos += numLen;
-            this.state.col += numLen;
-            this.state.expectValue = false;
-            this.state.afterValue = true;
-            continue;
-          }
       }
       
-      pos++;
-      this.state.col++;
-    }
-
-    this.index.totalLines = this.state.line;
-    this.index.totalKeys = this.index.keysLength;
-    this.index.totalStructures = this.index.structuresLength;
-  }
-
-  _readKeyword(text, pos) {
-    const keywords = ['true', 'false', 'null'];
-    for (const kw of keywords) {
-      if (text.startsWith(kw, pos)) {
-        return kw;
+      if (char === '"') {
+        const keyStart = i + 1;
+        let keyEnd = keyStart;
+        
+        while (keyEnd < len && text[keyEnd] !== '"') {
+          if (text[keyEnd] === '\\') keyEnd += 2;
+          else keyEnd++;
+        }
+        
+        let after = keyEnd + 1;
+        while (after < len && (text[after] === ' ' || text[after] === '\t' || text[after] === '\n' || text[after] === '\r')) after++;
+        
+        if (after < len && text[after] === ':') {
+          const kIdx = this.keyCount++;
+          this.keys[kIdx] = (this.line << 8) | (this.depth & 0xFF);
+          this.keyPos[kIdx] = keyStart;
+          this.keyLen[kIdx] = Math.min(keyEnd - keyStart, 65535);
+          
+          if (this.depth > this.maxDepth) this.maxDepth = this.depth;
+        }
+        
+        i = keyEnd;
+        this.inString = true;
+        continue;
+      }
+      
+      if (char === '{' || char === '[') {
+        this.depth++;
+      } else if (char === '}' || char === ']') {
+        this.depth--;
+        if (this.depth < 0) {
+          this.errors.push({
+            line: this.line,
+            col: this.col,
+            message: '多余的闭合符号 "' + char + '"',
+            pos: i
+          });
+        }
       }
     }
-    return '';
-  }
-
-  _readNumber(text, pos) {
-    let len = 0;
-    if (text.charCodeAt(pos) === 0x2D) {
-      len++;
+    
+    if (this.depth !== 0) {
+      this.errors.push({
+        line: this.line,
+        col: this.col,
+        message: 'JSON 未正确闭合，缺少 ' + this.depth + ' 个闭合符号',
+        pos: len - 1
+      });
     }
-    while (pos + len < text.length) {
-      const ch = text.charCodeAt(pos + len);
-      if ((ch >= 0x30 && ch <= 0x39) || ch === 0x2E || ch === 0x65 || ch === 0x45 || ch === 0x2D || ch === 0x2B) {
-        len++;
-      } else {
-        break;
-      }
-    }
-    return len;
-  }
-
-  _addLine(pos) {
-    if (this.index.linesLength < this.index.lines.length) {
-      this.index.lines[this.index.linesLength++] = pos;
-    }
-  }
-
-  _addKey(text) {
-    if (this.index.keysLength < this.index.keys.length && this.state.lastKeyLength > 0) {
-      this.index.keys[this.index.keysLength] = (this.state.line << 8) | Math.min(this.state.depth, 255);
-      this.index.keyPositions[this.index.keysLength] = this.state.lastKeyStart;
-      this.index.keyLengths[this.index.keysLength] = this.state.lastKeyLength;
-      this.index.keysLength++;
-      this.state.expectKey = false;
-      this.state.expectColon = true;
-    }
-  }
-
-  _addStructure(type, action, pos) {
-    if (this.index.structuresLength < this.index.structures.length) {
-      const typeCode = type === 'object' ? 0 : 1;
-      const actionCode = action === 'open' ? 0 : 1;
-      this.index.structures[this.index.structuresLength] = 
-        (this.state.line << 16) | (this.state.depth << 8) | (typeCode << 1) | actionCode;
-      this.index.structuresLength++;
-    }
-  }
-
-  _getLastStructure() {
-    if (this.index.structuresLength === 0) return null;
-    const s = this.index.structures[this.index.structuresLength - 1];
+    
     return {
-      line: s >>> 16,
-      depth: (s >> 8) & 0xFF,
-      type: (s >> 1) & 1 ? 'array' : 'object',
-      action: s & 1 ? 'close' : 'open'
+      index: {
+        lineStarts: this.lineStarts.slice(0, this.lineCount + 1),
+        keys: this.keys.slice(0, this.keyCount),
+        keyPos: this.keyPos.slice(0, this.keyCount),
+        keyLen: this.keyLen.slice(0, this.keyCount),
+        lineCount: this.lineCount,
+        keyCount: this.keyCount,
+        maxDepth: this.maxDepth
+      },
+      errors: this.errors,
+      meta: {
+        totalChars: len,
+        totalLines: this.lineCount,
+        totalKeys: this.keyCount,
+        maxDepth: this.maxDepth
+      }
     };
   }
 
-  _createResult() {
-    return {
-      lines: this.index.lines.slice(0, this.index.linesLength),
-      keys: this.index.keys.slice(0, this.index.keysLength),
-      keyPositions: this.index.keyPositions.slice(0, this.index.keysLength),
-      keyLengths: this.index.keyLengths.slice(0, this.index.keysLength),
-      structures: this.index.structures.slice(0, this.index.structuresLength),
-      errors: this.index.errors,
-      totalLines: this.index.totalLines,
-      totalKeys: this.index.totalKeys,
-      totalStructures: this.index.totalStructures,
-      rootType: this.index.rootType,
-      size: this.index.size
-    };
+  static getKeyName(text, index, keyIdx) {
+    const start = index.keyPos[keyIdx];
+    const len = index.keyLen[keyIdx];
+    return text.substring(start, start + len);
+  }
+
+  static getLine(text, index, lineNum) {
+    const start = index.lineStarts[lineNum];
+    const end = index.lineStarts[lineNum + 1] || text.length;
+    return text.slice(start, end).trim();
+  }
+}
+
+export class ValidationError extends Error {
+  constructor(message, line, col, pos) {
+    super(message);
+    this.name = 'ValidationError';
+    this.line = line;
+    this.col = col;
+    this.pos = pos;
   }
 }

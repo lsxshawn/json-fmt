@@ -6,6 +6,10 @@ const props = defineProps({
     type: Array,
     default: () => []
   },
+  totalNodes: {
+    type: Number,
+    default: 0
+  },
   scrollTop: {
     type: Number,
     default: 0
@@ -21,6 +25,14 @@ const props = defineProps({
   isParsing: {
     type: Boolean,
     default: false
+  },
+  memoryIndex: {
+    type: Object,
+    default: null
+  },
+  content: {
+    type: String,
+    default: ''
   }
 })
 
@@ -157,12 +169,18 @@ function drawMinimap() {
 }
 
 function drawSampledOptimized(ctx, width, height, rowHeight, totalNodes) {
-  const nodes = props.visibleNodes
+  const barWidth = Math.max(width - 8, 2)
   
+  // 如果有memoryIndex，基于索引绘制完整的Minimap
+  if (props.memoryIndex && props.content) {
+    drawFromIndex(ctx, width, height, rowHeight, totalNodes, barWidth)
+    return
+  }
+  
+  // 回退到使用visibleNodes
+  const nodes = props.visibleNodes
   const effectiveSampleCount = Math.min(totalNodes, MAX_NODES_TO_RENDER)
   const step = Math.max(1, Math.floor(totalNodes / effectiveSampleCount))
-  
-  const barWidth = Math.max(width - 8, 2)
   
   for (let i = 0; i < totalNodes; i += step) {
     const node = nodes[i]
@@ -173,22 +191,153 @@ function drawSampledOptimized(ctx, width, height, rowHeight, totalNodes) {
     
     const depthOffset = Math.min((node.depth || 0) * 2, width * 0.35)
     
-    let color = '#b5cea8'
-    let alpha = 0.6
+    const colorInfo = getColorForNode(node)
     
-    if (node.type === 4 || node.type === 5 || node.type === 'array' || node.type === 'object') {
-      color = '#569cd6'
-      alpha = 0.4
-    } else if (node.type === 3 || node.type === 'string') {
-      color = '#ce9178'
-      alpha = 0.7
-    } else if (node.type === 2 || node.type === 'number') {
-      color = '#89d185'
-      alpha = 0.7
-    } else if (node.type === 1 || node.type === 0 || node.type === 'boolean' || node.type === 'null') {
-      color = '#569cd6'
-      alpha = 0.6
+    ctx.fillRect(4 + depthOffset, y, barWidth - depthOffset, h)
+  }
+  
+  ctx.globalAlpha = 1
+}
+
+// 根据节点类型获取颜色
+function getColorForNode(node) {
+  let color = '#b5cea8'
+  let alpha = 0.6
+  
+  if (node.type === 4 || node.type === 5 || node.type === 'array' || node.type === 'object') {
+    color = '#569cd6'
+    alpha = 0.4
+  } else if (node.type === 3 || node.type === 'string') {
+    color = '#ce9178'
+    alpha = 0.7
+  } else if (node.type === 2 || node.type === 'number') {
+    color = '#89d185'
+    alpha = 0.7
+  } else if (node.type === 1 || node.type === 0 || node.type === 'boolean' || node.type === 'null') {
+    color = '#569cd6'
+    alpha = 0.6
+  }
+  
+  return { color, alpha }
+}
+
+// 基于索引绘制完整的Minimap
+function drawFromIndex(ctx, width, height, rowHeight, totalNodes, barWidth) {
+  const index = props.memoryIndex
+  const content = props.content
+  
+  if (!index || !content) return
+  
+  const effectiveSampleCount = Math.min(totalNodes, MAX_NODES_TO_RENDER)
+  const step = Math.max(1, Math.floor(totalNodes / effectiveSampleCount))
+  
+  // 使用索引中的键信息来绘制
+  const keyCount = index.keyCount || 0
+  const lineCount = index.lineCount || 0
+  
+  // 为每一行创建一个深度和类型的映射
+  const lineInfo = new Map()
+  
+  // 从结构信息中获取深度变化
+  for (let i = 0; i < index.structureCount; i++) {
+    const s = index.structures[i]
+    const structLine = s >>> 16
+    const depth = (s >> 8) & 0xFF
+    const action = s & 1 // 0 = open, 1 = close
+    
+    if (!lineInfo.has(structLine)) {
+      lineInfo.set(structLine, { depth: 0, isObject: false, isArray: false })
     }
+  }
+  
+  // 从键信息中获取每一行的深度
+  for (let i = 0; i < keyCount; i++) {
+    const keyLine = index.keys[i] >>> 8
+    const depth = index.keys[i] & 0xFF
+    
+    if (!lineInfo.has(keyLine)) {
+      lineInfo.set(keyLine, { depth: depth, isObject: false, isArray: false })
+    } else {
+      const info = lineInfo.get(keyLine)
+      info.depth = depth
+    }
+  }
+  
+  // 扫描内容来确定每一行的类型
+  let currentLine = 1
+  let currentDepth = 0
+  
+  for (let i = 0; i < content.length && currentLine <= lineCount; i++) {
+    if (content[i] === '\n') {
+      currentLine++
+      continue
+    }
+    
+    if (content[i] === '{') {
+      currentDepth++
+      if (!lineInfo.has(currentLine)) {
+        lineInfo.set(currentLine, { depth: currentDepth, isObject: true, isArray: false })
+      } else {
+        const info = lineInfo.get(currentLine)
+        info.isObject = true
+        info.depth = currentDepth
+      }
+    } else if (content[i] === '}') {
+      currentDepth--
+    } else if (content[i] === '[') {
+      currentDepth++
+      if (!lineInfo.has(currentLine)) {
+        lineInfo.set(currentLine, { depth: currentDepth, isObject: false, isArray: true })
+      } else {
+        const info = lineInfo.get(currentLine)
+        info.isArray = true
+        info.depth = currentDepth
+      }
+    } else if (content[i] === ']') {
+      currentDepth--
+    }
+  }
+  
+  // 绘制采样的行
+  for (let i = 0; i < totalNodes; i += step) {
+    const lineNum = Math.min(Math.floor(i * lineCount / totalNodes) + 1, lineCount)
+    const info = lineInfo.get(lineNum)
+    
+    let depthOffset = 0
+    let color = '#b5cea8'
+    let alpha = 0.4
+    
+    if (info) {
+      depthOffset = Math.min(info.depth * 2, width * 0.35)
+      
+      if (info.isObject || info.isArray) {
+        color = '#569cd6'
+        alpha = 0.5
+      } else {
+        // 尝试检测值类型
+        const lineStart = index.getLineStart(lineNum)
+        const lineEnd = index.getLineEnd(lineNum)
+        if (lineStart >= 0 && lineEnd > lineStart) {
+          const lineText = content.substring(lineStart, lineEnd).trim()
+          if (lineText.startsWith('"')) {
+            color = '#ce9178'
+            alpha = 0.6
+          } else if (!isNaN(parseFloat(lineText))) {
+            color = '#89d185'
+            alpha = 0.6
+          } else if (lineText === 'true' || lineText === 'false') {
+            color = '#569cd6'
+            alpha = 0.5
+          } else if (lineText === 'null') {
+            color = '#569cd6'
+            alpha = 0.4
+          }
+        }
+      }
+    }
+    
+    const y = i * rowHeight
+    const h = Math.min(step * rowHeight, 3)
     
     ctx.fillStyle = color
     ctx.globalAlpha = alpha
@@ -330,6 +479,10 @@ watch(() => props.visibleNodes, () => {
 }, { deep: true })
 
 watch(() => props.totalHeight, () => {
+  scheduleDrawMinimap()
+})
+
+watch(() => props.totalNodes, () => {
   scheduleDrawMinimap()
 })
 
