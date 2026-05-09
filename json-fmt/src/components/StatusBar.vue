@@ -31,12 +31,6 @@ const props = defineProps({
 
 const emit = defineEmits(['toggle-console']);
 
-const statusText = computed(() => {
-  if (props.isParsing) return '解析中';
-  if (props.parseStatus === 'error') return '错误';
-  return '就绪';
-});
-
 const statusClass = computed(() => {
   if (props.isParsing) return 'parsing';
   if (props.parseStatus === 'error') return 'error';
@@ -63,26 +57,13 @@ const statusClass = computed(() => {
     <div class="status-center"></div>
     
     <div class="status-right">
+      <!-- 状态光点 - 极简到只剩一个光点 -->
       <button 
-        class="status-toggle" 
+        class="status-dot" 
+        :class="statusClass"
         @click="emit('toggle-console')"
-        :class="{ active: isConsoleOpen }"
-      >
-        <span class="status-dot" :class="statusClass"></span>
-        <span class="status-label">{{ statusText }}</span>
-        <svg 
-          class="chevron-icon" 
-          :class="{ expanded: isConsoleOpen }"
-          width="12" 
-          height="12" 
-          viewBox="0 0 24 24" 
-          fill="none" 
-          stroke="currentColor" 
-          stroke-width="2"
-        >
-          <path d="M6 9l6 6 6-6"/>
-        </svg>
-      </button>
+        :title="isParsing ? '解析中' : parseStatus === 'error' ? '错误' : '就绪'"
+      ></button>
     </div>
   </div>
 </template>
@@ -112,6 +93,7 @@ const statusClass = computed(() => {
   gap: 4px;
   color: var(--text-secondary);
   font-family: var(--font-mono);
+  font-weight: var(--font-normal);
 }
 
 .status-separator {
@@ -125,36 +107,16 @@ const statusClass = computed(() => {
 .status-right {
   display: flex;
   align-items: center;
-  gap: 12px;
 }
 
-.status-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  background: transparent;
+/* 状态光点 - Apple 设备风格 */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
   border: none;
-  color: var(--text-tertiary);
-  font-size: 12px;
-  border-radius: var(--radius-md);
   cursor: pointer;
   transition: all var(--transition-fast);
-}
-
-.status-toggle:hover {
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-}
-
-.status-label {
-  font-weight: 500;
-}
-
-.status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
 }
 
 .status-dot.ready {
@@ -163,23 +125,25 @@ const statusClass = computed(() => {
 
 .status-dot.parsing {
   background: var(--warning);
-  animation: pulse 1.5s ease-in-out infinite;
+  animation: breathe 2s ease-in-out infinite;
 }
 
 .status-dot.error {
   background: var(--error);
 }
 
-.chevron-icon {
-  transition: transform 200ms ease;
+.status-dot:hover {
+  transform: scale(1.2);
 }
 
-.chevron-icon.expanded {
-  transform: rotate(180deg);
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+@keyframes breathe {
+  0%, 100% { 
+    opacity: 0.4;
+    transform: scale(0.9);
+  }
+  50% { 
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 </style>

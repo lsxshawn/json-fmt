@@ -3214,22 +3214,26 @@ onUnmounted(() => {
   gap: 6px;
   padding: 6px 12px;
   background: transparent;
-  border: 1px solid #ddd;
-  border-radius: 4px;
+  border: none;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 13px;
-  color: #333;
-  transition: all 0.2s;
+  color: var(--text-secondary);
+  transition: background-color var(--transition-fast);
 }
 
 .action-btn:hover:not(:disabled) {
-  background: #f5f5f5;
-  border-color: #ccc;
+  background: rgba(0, 0, 0, 0.05);  /* hover 时背景轻微浮现 5% */
+  color: var(--text-primary);
 }
 
 .action-btn:disabled {
-  opacity: 0.5;
+  opacity: 0.4;
   cursor: not-allowed;
+}
+
+.action-btn:active:not(:disabled) {
+  background: rgba(0, 0, 0, 0.08);  /* 点击时背景加深 */
 }
 
 .btn-icon {
@@ -3249,15 +3253,19 @@ onUnmounted(() => {
   justify-content: center;
   background: transparent;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  color: #666;
-  transition: all 0.2s;
+  color: var(--text-secondary);
+  transition: background-color var(--transition-fast);
 }
 
 .icon-btn:hover {
-  background: #f0f0f0;
-  color: #333;
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--text-primary);
+}
+
+.icon-btn:active {
+  background: rgba(0, 0, 0, 0.08);
 }
 
 .app-layout {

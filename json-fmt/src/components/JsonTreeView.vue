@@ -316,32 +316,29 @@ defineExpose({
 
     <div class="tree-content">
       <div v-if="!currentFile" class="empty-main">
-        <div class="empty-decoration">
-          <div class="grid-pattern"></div>
-        </div>
         <div class="empty-content">
-          <div class="empty-logo">
-            <JsonIcon :size="64" />
+          <div class="empty-icon-large">
+            <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="12" y1="18" x2="12" y2="12"/>
+              <line x1="9" y1="15" x2="15" y2="15"/>
+            </svg>
           </div>
-          <h2 class="empty-title">未加载 JSON</h2>
-          <p class="empty-desc">打开文件以进行可视化</p>
-          <div class="empty-actions">
+          <p class="empty-invite">拖拽 JSON 文件到此处</p>
+          <p class="empty-hint">支持 100MB+ 大文件，纯本地处理</p>
+          <div class="empty-actions-vertical">
             <button class="btn-primary" @click="$emit('openFiles')">
               <FolderIcon :size="16" />
               <span>打开文件</span>
             </button>
-            <button class="btn-secondary" @click="handlePaste">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                <path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/>
-                <rect x="8" y="2" width="8" height="4" rx="1"/>
-              </svg>
+            <button class="btn-text" @click="handlePaste">
               <span>粘贴内容</span>
             </button>
           </div>
           <div class="empty-shortcuts">
-            <span class="shortcut">Ctrl+O</span>
-            <span class="shortcut">Ctrl+V</span>
-            <span class="shortcut">Ctrl+S</span>
+            <span class="shortcut-hint">Ctrl+O</span>
+            <span class="shortcut-hint">Ctrl+V</span>
           </div>
         </div>
       </div>
@@ -557,21 +554,6 @@ defineExpose({
   overflow: hidden;
 }
 
-.empty-decoration {
-  position: absolute;
-  inset: 0;
-  opacity: 0.03;
-}
-
-.grid-pattern {
-  width: 100%;
-  height: 100%;
-  background-image:
-    linear-gradient(to right, #000 1px, transparent 1px),
-    linear-gradient(to bottom, #000 1px, transparent 1px);
-  background-size: 60px 60px;
-}
-
 .empty-content {
   display: flex;
   flex-direction: column;
@@ -580,72 +562,67 @@ defineExpose({
   z-index: 1;
 }
 
-.empty-logo {
+.empty-icon-large {
   width: 80px;
   height: 80px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-elevated);
-  border-radius: var(--radius-lg);
-  margin-bottom: 24px;
-  color: var(--accent);
+  color: var(--text-tertiary);
+  margin-bottom: 32px;
 }
 
-.empty-title {
-  font-size: 18px;
-  font-weight: 500;
+.empty-invite {
+  font-size: 16px;
+  font-weight: var(--font-normal);
   color: var(--text-primary);
   margin-bottom: 8px;
 }
 
-.empty-desc {
-  font-size: 14px;
-  color: var(--text-secondary);
-  margin-bottom: 24px;
+.empty-hint {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  margin-bottom: 32px;
 }
 
-.empty-actions {
+.empty-actions-vertical {
   display: flex;
+  flex-direction: column;
+  align-items: center;
   gap: 12px;
-  margin-bottom: 16px;
+  margin-bottom: 24px;
 }
 
 .btn-primary {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 16px;
+  padding: 10px 20px;
   background: var(--accent);
   color: var(--text-inverse);
   border: none;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-md);  /* 6px，更克制 */
   font-size: 14px;
-  font-weight: 500;
+  font-weight: var(--font-medium);
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background-color var(--transition-fast);
 }
 
 .btn-primary:hover {
   background: var(--accent-hover);
 }
 
-.btn-secondary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  background: var(--bg-elevated);
+.btn-text {
+  padding: 6px 12px;
+  background: transparent;
   color: var(--text-secondary);
-  border: 1px solid var(--border-medium);
-  border-radius: var(--radius-md);
+  border: none;
   font-size: 14px;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: color var(--transition-fast);
 }
 
-.btn-secondary:hover {
-  border-color: var(--border-strong);
+.btn-text:hover {
   color: var(--text-primary);
 }
 
@@ -654,13 +631,10 @@ defineExpose({
   gap: 16px;
 }
 
-.shortcut {
-  padding: 2px 6px;
-  background: var(--bg-elevated);
-  border-radius: var(--radius-sm);
+.shortcut-hint {
   font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text-tertiary);
+  font-size: 11px;
+  color: var(--text-muted);  /* 极淡 */
 }
 
 .error-state {
@@ -738,9 +712,9 @@ defineExpose({
   align-items: center;
   justify-content: flex-end;
   width: 56px;
-  padding: 0 12px 0 8px;
+  padding: 0 16px 0 0;  /* 只用右内边距留白，不用竖线 */
   background: transparent;
-  border-right: 1px solid var(--border-light);
+  border-right: none;  /* 去掉竖线 */
   flex-shrink: 0;
   user-select: none;
 }
@@ -749,6 +723,7 @@ defineExpose({
   color: var(--text-tertiary);
   font-size: 12px;
   font-family: var(--font-mono);
+  font-weight: var(--font-light);  /* 字重 300，细 */
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
@@ -804,6 +779,7 @@ defineExpose({
 .node-key {
   color: var(--json-key);
   margin-right: 4px;
+  font-weight: var(--font-medium);  /* 键名字重 500 */
 }
 
 .colon {
@@ -815,6 +791,7 @@ defineExpose({
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 500px;
+  font-weight: var(--font-normal);  /* 值字重 400 */
 }
 
 .string-value {
