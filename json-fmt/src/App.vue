@@ -3134,6 +3134,8 @@ onUnmounted(() => {
         :parseTime="parseTime"
         :is-parsing="isParsing"
         :parse-status="parseStatus"
+        :is-console-open="showConsole"
+        @toggle-console="showConsole = !showConsole"
       />
     </footer> <!-- .app-footer -->
   </div> <!-- .app-layout -->
