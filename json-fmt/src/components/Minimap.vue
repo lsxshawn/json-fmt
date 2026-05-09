@@ -221,127 +221,151 @@ function getColorForNode(node) {
   return { color, alpha }
 }
 
-// 基于索引绘制完整的Minimap
+// 值类型常量
+const TYPE_OBJECT = 0
+const TYPE_ARRAY = 1
+const TYPE_STRING = 2
+const TYPE_NUMBER = 3
+const TYPE_BOOLEAN = 4
+const TYPE_NULL = 5
+const TYPE_OTHER = 6
+
+// 类型颜色映射
+const TYPE_COLORS = [
+  '#569cd6',  // 对象 - 蓝
+  '#4ec9b0',  // 数组 - 青绿
+  '#ce9178',  // 字符串 - 橙
+  '#b5cea8',  // 数字 - 绿
+  '#569cd6',  // 布尔 - 蓝
+  '#80868b',  // null - 灰
+  '#5a5a6e'   // 其他 - 深灰
+]
+
+// 值类型缓存
+let lineTypes = null
+
+// 根据索引和内容快速判断值类型
+function detectValueType(index, content, keyIdx) {
+  if (keyIdx < 0 || keyIdx >= index.keyCount) return TYPE_OTHER
+  
+  // 支持两种字段名：keyPos/keyLen (StreamingValidator) 和 keyPositions/keyLengths (App.vue)
+  const keyPos = (index.keyPos && index.keyPos[keyIdx]) !== undefined 
+    ? index.keyPos[keyIdx] 
+    : (index.keyPositions ? index.keyPositions[keyIdx] : 0)
+  const keyLen = (index.keyLen && index.keyLen[keyIdx]) !== undefined 
+    ? index.keyLen[keyIdx] 
+    : (index.keyLengths ? index.keyLengths[keyIdx] : 0)
+  
+  if (keyPos === 0 && keyLen === 0) return TYPE_OTHER
+  
+  // 找到冒号后的值起始位置（跳过键名、引号、冒号和空格）
+  let valPos = keyPos + keyLen + 1
+  while (valPos < content.length) {
+    const c = content[valPos]
+    if (c === ':' || c === ' ' || c === '\t' || c === '\n') {
+      valPos++
+    } else {
+      break
+    }
+  }
+  
+  if (valPos >= content.length) return TYPE_OTHER
+  
+  const firstChar = content[valPos]
+  
+  if (firstChar === '{') return TYPE_OBJECT
+  if (firstChar === '[') return TYPE_ARRAY
+  if (firstChar === '"') return TYPE_STRING
+  if (firstChar === 't' || firstChar === 'f') return TYPE_BOOLEAN
+  if (firstChar === 'n') return TYPE_NULL
+  if (firstChar === '-' || (firstChar >= '0' && firstChar <= '9')) return TYPE_NUMBER
+  
+  return TYPE_OTHER
+}
+
+// 二分查找给定行号对应的键索引
+function findKeyIndexForLine(index, targetLine) {
+  let left = 0
+  let right = index.keyCount - 1
+  
+  while (left <= right) {
+    const mid = Math.floor((left + right) / 2)
+    const line = index.keys[mid] >>> 8
+    
+    if (line === targetLine) return mid
+    if (line < targetLine) left = mid + 1
+    else right = mid - 1
+  }
+  
+  return -1
+}
+
+// 基于索引绘制完整的Minimap（优化版）
 function drawFromIndex(ctx, width, height, rowHeight, totalNodes, barWidth) {
   const index = props.memoryIndex
   const content = props.content
   
   if (!index || !content) return
   
-  const effectiveSampleCount = Math.min(totalNodes, MAX_NODES_TO_RENDER)
-  const step = Math.max(1, Math.floor(totalNodes / effectiveSampleCount))
-  
-  // 使用索引中的键信息来绘制
   const keyCount = index.keyCount || 0
   const lineCount = index.lineCount || 0
   
-  // 为每一行创建一个深度和类型的映射
-  const lineInfo = new Map()
+  if (keyCount === 0 || lineCount === 0) return
   
-  // 从结构信息中获取深度变化
-  for (let i = 0; i < index.structureCount; i++) {
-    const s = index.structures[i]
-    const structLine = s >>> 16
-    const depth = (s >> 8) & 0xFF
-    const action = s & 1 // 0 = open, 1 = close
+  // 使用键索引直接映射到高度，确保内容均匀分布
+  const sampleCount = Math.min(keyCount, MAX_NODES_TO_RENDER)
+  
+  for (let j = 0; j < sampleCount; j++) {
+    // 均匀采样
+    const i = Math.floor((j / sampleCount) * keyCount)
     
-    if (!lineInfo.has(structLine)) {
-      lineInfo.set(structLine, { depth: 0, isObject: false, isArray: false })
-    }
-  }
-  
-  // 从键信息中获取每一行的深度
-  for (let i = 0; i < keyCount; i++) {
-    const keyLine = index.keys[i] >>> 8
-    const depth = index.keys[i] & 0xFF
+    // 获取键的行号和深度
+    const keyInfo = index.keys[i]
+    const depth = keyInfo & 0xFF  // 深度始终在低8位
     
-    if (!lineInfo.has(keyLine)) {
-      lineInfo.set(keyLine, { depth: depth, isObject: false, isArray: false })
-    } else {
-      const info = lineInfo.get(keyLine)
-      info.depth = depth
-    }
-  }
-  
-  // 扫描内容来确定每一行的类型
-  let currentLine = 1
-  let currentDepth = 0
-  
-  for (let i = 0; i < content.length && currentLine <= lineCount; i++) {
-    if (content[i] === '\n') {
-      currentLine++
-      continue
-    }
+    // 获取键的位置和长度
+    const keyPos = (index.keyPos && index.keyPos[i]) !== undefined 
+      ? index.keyPos[i] 
+      : (index.keyPositions ? index.keyPositions[i] : 0)
+    const keyLen = (index.keyLen && index.keyLen[i]) !== undefined 
+      ? index.keyLen[i] 
+      : (index.keyLengths ? index.keyLengths[i] : 0)
     
-    if (content[i] === '{') {
-      currentDepth++
-      if (!lineInfo.has(currentLine)) {
-        lineInfo.set(currentLine, { depth: currentDepth, isObject: true, isArray: false })
+    // 跳过无效键
+    if (keyPos === 0 && keyLen === 0) continue
+    
+    // 找到冒号后的值起始位置
+    let valPos = keyPos + keyLen + 1
+    while (valPos < content.length) {
+      const c = content[valPos]
+      if (c === ':' || c === ' ' || c === '\t' || c === '\n') {
+        valPos++
       } else {
-        const info = lineInfo.get(currentLine)
-        info.isObject = true
-        info.depth = currentDepth
-      }
-    } else if (content[i] === '}') {
-      currentDepth--
-    } else if (content[i] === '[') {
-      currentDepth++
-      if (!lineInfo.has(currentLine)) {
-        lineInfo.set(currentLine, { depth: currentDepth, isObject: false, isArray: true })
-      } else {
-        const info = lineInfo.get(currentLine)
-        info.isArray = true
-        info.depth = currentDepth
-      }
-    } else if (content[i] === ']') {
-      currentDepth--
-    }
-  }
-  
-  // 绘制采样的行
-  for (let i = 0; i < totalNodes; i += step) {
-    const lineNum = Math.min(Math.floor(i * lineCount / totalNodes) + 1, lineCount)
-    const info = lineInfo.get(lineNum)
-    
-    let depthOffset = 0
-    let color = '#b5cea8'
-    let alpha = 0.4
-    
-    if (info) {
-      depthOffset = Math.min(info.depth * 2, width * 0.35)
-      
-      if (info.isObject || info.isArray) {
-        color = '#569cd6'
-        alpha = 0.5
-      } else {
-        // 尝试检测值类型
-        const lineStart = index.getLineStart(lineNum)
-        const lineEnd = index.getLineEnd(lineNum)
-        if (lineStart >= 0 && lineEnd > lineStart) {
-          const lineText = content.substring(lineStart, lineEnd).trim()
-          if (lineText.startsWith('"')) {
-            color = '#ce9178'
-            alpha = 0.6
-          } else if (!isNaN(parseFloat(lineText))) {
-            color = '#89d185'
-            alpha = 0.6
-          } else if (lineText === 'true' || lineText === 'false') {
-            color = '#569cd6'
-            alpha = 0.5
-          } else if (lineText === 'null') {
-            color = '#569cd6'
-            alpha = 0.4
-          }
-        }
+        break
       }
     }
     
-    const y = i * rowHeight
-    const h = Math.min(step * rowHeight, 3)
+    // 判断值类型
+    let type = TYPE_OTHER
+    if (valPos < content.length) {
+      const firstChar = content[valPos]
+      if (firstChar === '{') type = TYPE_OBJECT
+      else if (firstChar === '[') type = TYPE_ARRAY
+      else if (firstChar === '"') type = TYPE_STRING
+      else if (firstChar === 't' || firstChar === 'f') type = TYPE_BOOLEAN
+      else if (firstChar === 'n') type = TYPE_NULL
+      else if (firstChar === '-' || (firstChar >= '0' && firstChar <= '9')) type = TYPE_NUMBER
+    }
+    
+    // 使用键索引直接映射到 minimap 高度（0 ~ height）
+    const color = TYPE_COLORS[type]
+    const y = (i / keyCount) * height
+    const h = Math.max(height / keyCount, 1)
+    const xOffset = Math.min(depth * 1.5, width * 0.3)
     
     ctx.fillStyle = color
-    ctx.globalAlpha = alpha
-    ctx.fillRect(4 + depthOffset, y, barWidth - depthOffset, h)
+    ctx.globalAlpha = 0.7
+    ctx.fillRect(xOffset, y, width - xOffset, h)
   }
   
   ctx.globalAlpha = 1

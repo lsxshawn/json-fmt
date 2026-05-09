@@ -69,6 +69,8 @@ const BUFFER_SIZE = 10;
 const highlightedNodeId = ref(null);
 const searchInputRef = ref(null);
 
+let needNodesTimeout = null;
+
 function updateContainerHeight() {
   if (containerRef.value) {
     containerHeight.value = containerRef.value.clientHeight;
@@ -87,6 +89,20 @@ function handleMinimapJump(scrollTop) {
   const maxScroll = totalHeight.value - containerHeight.value;
   const clampedScrollTop = Math.max(0, Math.min(scrollTop, maxScroll));
   containerRef.value.scrollTop = clampedScrollTop;
+  
+  // 手动触发节点加载（因为直接设置scrollTop不会触发scroll事件）
+  if (props.onNeedNodes) {
+    const itemCount = props.totalNodes > 0 ? props.totalNodes : props.visibleNodes.length;
+    const visibleCount = Math.ceil(containerHeight.value / ITEM_HEIGHT) + BUFFER_SIZE * 2;
+    const maxStart = Math.max(0, itemCount - visibleCount);
+    const requestedStart = Math.floor(clampedScrollTop / ITEM_HEIGHT) - BUFFER_SIZE;
+    const start = Math.max(0, Math.min(requestedStart, maxStart));
+    const end = Math.min(itemCount, start + visibleCount);
+    
+    const bufferStart = Math.max(0, start - BUFFER_SIZE);
+    const bufferEnd = Math.min(itemCount, end + BUFFER_SIZE);
+    props.onNeedNodes(bufferStart, bufferEnd);
+  }
 }
 
 function handleSearchKeydown(e) {
@@ -122,17 +138,24 @@ const visibleRange = computed(() => {
   const start = Math.max(0, Math.min(requestedStart, maxStart));
   const end = Math.min(itemCount, start + visibleCount);
   
-  if (props.onNeedNodes) {
-    const bufferStart = Math.max(0, start - BUFFER_SIZE);
-    const bufferEnd = Math.min(itemCount, end + BUFFER_SIZE);
-    props.onNeedNodes(bufferStart, bufferEnd);
-  }
-  
   return { start, end };
 });
 
 const visibleItems = computed(() => {
-  return props.visibleNodes.slice(visibleRange.value.start, visibleRange.value.end);
+  const { start, end } = visibleRange.value;
+  // 根据节点的全局ID过滤可见区域的节点
+  const items = props.visibleNodes.filter(node => node && node.id >= start && node.id < end);
+  
+  // Debug: 输出可见范围信息
+  if (props.visibleNodes.length > 0) {
+    console.log('[JsonTreeView] visibleRange:', { start, end }, 
+                'visibleNodes count:', props.visibleNodes.length,
+                'visibleItems count:', items.length,
+                'first node id:', props.visibleNodes[0]?.id,
+                'last node id:', props.visibleNodes[props.visibleNodes.length - 1]?.id);
+  }
+  
+  return items;
 });
 
 const totalHeight = computed(() => {
@@ -209,8 +232,29 @@ function highlightMatch(text) {
 
 function handleScroll(e) {
   const maxScroll = Math.max(0, totalHeight.value - containerHeight.value);
-  scrollTop.value = Math.max(0, Math.min(e.target.scrollTop, maxScroll));
+  const newScrollTop = Math.max(0, Math.min(e.target.scrollTop, maxScroll));
+  
+  console.log('[handleScroll] e.target.scrollTop:', e.target.scrollTop, 
+              'newScrollTop:', newScrollTop, 
+              'totalHeight:', totalHeight.value,
+              'containerHeight:', containerHeight.value);
+  
+  scrollTop.value = newScrollTop;
   emit('scroll', scrollTop.value);
+  
+  // 同步触发节点加载
+  if (props.onNeedNodes) {
+    const itemCount = props.totalNodes > 0 ? props.totalNodes : props.visibleNodes.length;
+    const visibleCount = Math.ceil(containerHeight.value / ITEM_HEIGHT) + BUFFER_SIZE * 2;
+    const maxStart = Math.max(0, itemCount - visibleCount);
+    const requestedStart = Math.floor(scrollTop.value / ITEM_HEIGHT) - BUFFER_SIZE;
+    const start = Math.max(0, Math.min(requestedStart, maxStart));
+    const end = Math.min(itemCount, start + visibleCount);
+    
+    const bufferStart = Math.max(0, start - BUFFER_SIZE);
+    const bufferEnd = Math.min(itemCount, end + BUFFER_SIZE);
+    props.onNeedNodes(bufferStart, bufferEnd);
+  }
 }
 
 function handleNodeClick(node, e) {
@@ -328,6 +372,7 @@ defineExpose({
       </div>
 
       <div class="tree-container" v-else>
+        <!-- VS Code style layout: gutter (line numbers) + content + minimap -->
         <div
           ref="containerRef"
           class="tree-scroll"
@@ -343,23 +388,27 @@ defineExpose({
                   'is-highlighted': currentMatchNodeId === node.id,
                   'is-root': node.isRoot
                 }"
-                :style="{ paddingLeft: (node.depth * 20) + 'px' }"
-                @click="handleNodeClick(node, $event)"
-                @contextmenu="handleContextMenu(node, $event)"
               >
-                <span
-                  v-if="node.type === 'object' || node.type === 'array'"
-                  class="toggle-btn"
-                  @click.stop="emit('toggleNode', node.id)"
-                >
-                  {{ node.collapsed ? '›' : '⌄' }}
+                <!-- VS Code style gutter with line numbers -->
+                <span class="line-gutter">
+                  <span class="line-number">{{ node.id + 1 }}</span>
                 </span>
-                <span v-else class="toggle-placeholder"></span>
+                
+                <!-- Content area with indentation -->
+                <span class="node-content" :style="{ paddingLeft: (node.depth * 12) + 'px' }">
+                  <span
+                    v-if="node.type === 'object' || node.type === 'array'"
+                    class="toggle-btn"
+                    @click.stop="emit('toggleNode', node.id)"
+                  >
+                    {{ node.collapsed ? '›' : '⌄' }}
+                  </span>
+                  <span v-else class="toggle-placeholder"></span>
 
-                <span
-                  v-if="!node.isRoot"
-                  class="node-key"
-                >
+                  <span
+                    v-if="!node.isRoot"
+                    class="node-key"
+                  >
                   <template v-if="highlightMatch(node.key)?.isMatch">
                     {{ highlightMatch(node.key).before }}<mark class="search-match">{{ highlightMatch(node.key).match }}</mark>{{ highlightMatch(node.key).after }}
                   </template>
@@ -401,6 +450,7 @@ defineExpose({
                   <span class="node-count">{{ node.collapsed ? node.childCount : '' }}</span>
                   <span class="bracket">}</span>
                 </template>
+                  </span> <!-- Close node-content -->
               </div>
             </div>
           </div>
@@ -713,16 +763,21 @@ defineExpose({
 
 .tree-node {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   height: 22px;
-  padding: 0 8px;
   font-size: 13px;
-  font-family: 'Consolas', 'Monaco', monospace;
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Fira Mono', 'Roboto Mono', 'Consolas', monospace;
   cursor: pointer;
+  border-left: 2px solid transparent;
 }
 
 .tree-node:hover {
-  background: var(--bg-hover);
+  background: rgba(140, 140, 140, 0.1);
+}
+
+.tree-node.is-highlighted {
+  background: rgba(0, 122, 204, 0.15);
+  border-left-color: #007acc;
 }
 
 .tree-node.active,
@@ -737,6 +792,34 @@ defineExpose({
 
 .tree-node.is-root {
   font-weight: 500;
+}
+
+.line-gutter {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 56px;
+  padding: 0 16px 0 8px;
+  background: transparent;
+  border-right: 1px solid #3b3b3b;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.line-number {
+  color: #8b949e;
+  font-size: 12px;
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Fira Mono', 'Roboto Mono', 'Consolas', monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.node-content {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  padding: 0 8px;
+  min-width: 0;
 }
 
 .search-match {

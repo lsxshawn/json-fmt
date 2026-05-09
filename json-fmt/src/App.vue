@@ -2619,7 +2619,8 @@ async function parseJSONContent(content, size, fileId = null, readDuration = 0) 
             
             // 设置回调函数
             blockCacheManager.onBlocksChanged = (nodes) => {
-              visibleNodes.value = markRaw(nodes);
+              // 使用新数组触发响应式更新
+              visibleNodes.value = [...nodes];
             };
             
             // 加载第一个Block（可见区）
@@ -2628,7 +2629,7 @@ async function parseJSONContent(content, size, fileId = null, readDuration = 0) 
             // 获取初始可见节点
             const initialNodes = blockCacheManager.getActiveNodes();
             if (initialNodes.length > 0) {
-              visibleNodes.value = markRaw(initialNodes);
+              visibleNodes.value = [...initialNodes];
             }
           }
         } catch (e) {
@@ -2960,6 +2961,10 @@ function handleNeedNodes(start, end) {
   const blockSize = blockCacheManager.blockSize;
   const startBlock = Math.max(0, Math.floor(start / blockSize) - 1);
   const endBlock = Math.ceil(end / blockSize) + 1;
+  
+  console.log('[handleNeedNodes] start:', start, 'end:', end, 
+              'startBlock:', startBlock, 'endBlock:', endBlock,
+              'blockSize:', blockSize);
   
   blockCacheManager.loadBlocks(startBlock, endBlock);
 }
