@@ -297,58 +297,268 @@ function createNode(key, value, parentPath = '') {
   })();
 
   const type = typeof value;
+  let node = {
+    id,
+    k: key,
+    v: value,
+    type,
+    path: path.slice(),
+    displayPath,
+    depth: path.length,
+    isRoot,
+    collapsed: false,
+    children: []
+  };
 
-  let displayValue, fullValue, childCount = 0, hasChildren = false;
-  
-  if (value === null) {
-    displayValue = 'null';
-    fullValue = null;
-  } else if (type === 'boolean') {
-    displayValue = value ? 'true' : 'false';
-    fullValue = value;
-  } else if (type === 'number') {
-    displayValue = String(value);
-    fullValue = value;
-  } else if (type === 'string') {
-    displayValue = value.length > 200 ? value.substring(0, 200) + '...' : value;
-    fullValue = value;
-  } else if (Array.isArray(value)) {
-    childCount = value.length;
-    displayValue = 'Array(' + childCount + ')';
-    fullValue = null;
-    hasChildren = childCount > 0;
-  } else if (type === 'object') {
-    const keys = Object.keys(value);
-    childCount = keys.length;
-    displayValue = 'Object(' + childCount + ')';
-    fullValue = null;
-    hasChildren = childCount > 0;
+  if (type === 'object' && value !== null) {
+    if (Array.isArray(value)) {
+      node._isLazy = true;
+      node._rawValue = value;
+      node._maxChildren = 100;
+      node.type = 'array';
+    } else {
+      node._isLazy = true;
+      node._rawValue = value;
+      node._maxChildren = 100;
+      node.type = 'object';
+    }
   } else {
-    displayValue = String(value);
-    fullValue = value;
+    node.type = type;
+    node.value = value;
   }
 
-  return {
-    id,
-    key,
-    type,
-    depth: path.length,
-    path,
-    displayPath,
-    displayValue,
-    fullValue,
-    hasChildren,
-    childCount,
-    isExpanded: hasChildren && path.length < 3,
-    collapsed: false,
-    isRoot,
-    line: 0,
-    _isLazy: hasChildren,
-    _rawValue: hasChildren ? value : null
-  };
+  return node;
+}
+
+function parseShard(data, basePath, baseId, maxDepth = 10) {
+  const result = [];
+  let localId = baseId;
+  
+  const stack = [{
+    value: data,
+    key: undefined,
+    depth: 0,
+    path: basePath ? [...basePath] : [],
+    isRoot: basePath === undefined || basePath.length === 0
+  }];
+  
+  while (stack.length > 0) {
+    const item = stack.pop();
+    const { value, key, depth, path, isRoot } = item;
+    
+    localId++;
+    
+    let type, displayValue, fullValue, childCount = 0;
+    
+    if (value === null) {
+      type = 'null';
+      displayValue = 'null';
+    } else if (typeof value === 'boolean') {
+      type = 'boolean';
+      displayValue = String(value);
+    } else if (typeof value === 'number') {
+      type = 'number';
+      displayValue = String(value);
+    } else if (typeof value === 'string') {
+      type = 'string';
+      fullValue = undefined;
+      displayValue = value.length > 200 ? value.substring(0, 200) + '...' : value;
+    } else if (Array.isArray(value)) {
+      type = 'array';
+      childCount = value.length;
+      displayValue = 'Array(' + value.length + ')';
+      
+      if (depth < maxDepth) {
+        for (let i = value.length - 1; i >= 0; i--) {
+          const newPath = [...path];
+          if (key !== undefined) newPath.push(key);
+          stack.push({
+            value: value[i],
+            key: '[' + i + ']',
+            depth: depth + 1,
+            path: newPath,
+            isRoot: false
+          });
+        }
+      }
+    } else if (typeof value === 'object') {
+      type = 'object';
+      const keys = Object.keys(value);
+      childCount = keys.length;
+      displayValue = 'Object(' + keys.length + ')';
+      
+      if (depth < maxDepth) {
+        for (let i = keys.length - 1; i >= 0; i--) {
+          const k = keys[i];
+          const newPath = [...path];
+          if (key !== undefined) newPath.push(key);
+          stack.push({
+            value: value[k],
+            key: k,
+            depth: depth + 1,
+            path: newPath,
+            isRoot: false
+          });
+        }
+      }
+    } else {
+      type = 'unknown';
+      displayValue = String(value);
+    }
+    
+    const nodePath = [...path];
+    if (key !== undefined) nodePath.push(key);
+    const displayPath = nodePath.map(p => 
+        typeof p === 'number' ? '[' + p + ']' : p
+      ).join('.');
+    
+    result.push({
+      id: localId,
+      key: key,
+      type: type,
+      path: nodePath,
+      displayPath: displayPath,
+      depth: depth,
+      isRoot: isRoot,
+      collapsed: false,
+      hasChildren: childCount > 0,
+      displayValue: displayValue,
+      fullValue: fullValue,
+      childCount: childCount
+    });
+  }
+  
+  return { nodes: result, lastId: localId };
+}
+
+function parseShardFast(data, basePath, baseId, maxDepth = 8, maxNodes = 500000) {
+  const result = [];
+  let localId = baseId;
+  let nodeCount = 0;
+  
+  const stack = [{
+    value: data,
+    key: undefined,
+    depth: 0,
+    path: basePath ? [...basePath] : [],
+    isRoot: basePath === undefined || basePath.length === 0
+  }];
+  
+  while (stack.length > 0 && nodeCount < maxNodes) {
+    const item = stack.pop();
+    const { value, key, depth, path, isRoot } = item;
+    
+    localId++;
+    nodeCount++;
+    
+    let type, displayValue, fullValue, childCount = 0;
+    
+    if (value === null) {
+      type = 'null';
+      displayValue = 'null';
+    } else if (typeof value === 'boolean') {
+      type = 'boolean';
+      displayValue = String(value);
+    } else if (typeof value === 'number') {
+      type = 'number';
+      displayValue = String(value);
+    } else if (typeof value === 'string') {
+      type = 'string';
+      displayValue = value.length > 200 ? value.substring(0, 200) + '...' : value;
+    } else if (Array.isArray(value)) {
+      type = 'array';
+      childCount = value.length;
+      displayValue = 'Array(' + value.length + ')';
+      
+      if (depth < maxDepth) {
+        for (let i = value.length - 1; i >= 0; i--) {
+          if (nodeCount >= maxNodes) break;
+          const newPath = [...path];
+          if (key !== undefined) newPath.push(key);
+          stack.push({
+            value: value[i],
+            key: '[' + i + ']',
+            depth: depth + 1,
+            path: newPath,
+            isRoot: false
+          });
+        }
+      }
+    } else if (typeof value === 'object') {
+      type = 'object';
+      const keys = Object.keys(value);
+      childCount = keys.length;
+      displayValue = 'Object(' + keys.length + ')';
+      
+      if (depth < maxDepth) {
+        for (let i = keys.length - 1; i >= 0; i--) {
+          if (nodeCount >= maxNodes) break;
+          const k = keys[i];
+          const newPath = [...path];
+          if (key !== undefined) newPath.push(key);
+          stack.push({
+            value: value[k],
+            key: k,
+            depth: depth + 1,
+            path: newPath,
+            isRoot: false
+          });
+        }
+      }
+    } else {
+      type = 'unknown';
+      displayValue = String(value);
+    }
+    
+    const nodePath = [...path];
+    if (key !== undefined) nodePath.push(key);
+    
+    result.push({
+      id: localId,
+      key: key,
+      type: type,
+      path: nodePath,
+      displayPath: nodePath.join('.'),
+      depth: depth,
+      isRoot: isRoot,
+      collapsed: false,
+      hasChildren: childCount > 0,
+      displayValue: displayValue,
+      childCount: childCount
+    });
+  }
+  
+  return { nodes: result, lastId: localId, truncated: nodeCount >= maxNodes };
+}
+
+function getDisplayValue(node) {
+  if (typeof node.v === 'string') {
+    return node.v.length > 200 ? node.v.substring(0, 200) + '...' : node.v;
+  }
+  if (node.v === null) {
+    return 'null';
+  }
+  if (typeof node.v === 'boolean') {
+    return String(node.v);
+  }
+  if (typeof node.v === 'number') {
+    return String(node.v);
+  }
+  if (node.type === 'array') {
+    const len = node._rawValue ? (Array.isArray(node._rawValue) ? node._rawValue.length : 0) : 0;
+    return 'Array(' + len + ')';
+  }
+  if (node.type === 'object') {
+    const raw = node._rawValue;
+    const len = raw && typeof raw === 'object' ? Object.keys(raw).length : 0;
+    return 'Object(' + len + ')';
+  }
+  return String(node.v);
 }
 
 function flattenTree(root) {
+  if (!root) return [];
+  
   const result = [];
   const stack = [root];
   
@@ -356,65 +566,340 @@ function flattenTree(root) {
     const node = stack.pop();
     if (!node) continue;
     
-    result.push(node);
+    const raw = node._rawValue;
+    const childCount = raw ? (Array.isArray(raw) ? raw.length : (typeof raw === 'object' ? Object.keys(raw).length : 0)) : 0;
+    const displayValue = getDisplayValue(node);
     
-    if (!node.collapsed && node.children) {
-      for (let i = node.children.length - 1; i >= 0; i--) {
-        stack.push(node.children[i]);
+    if (!node.collapsed) {
+      result.push({
+        id: node.id,
+        key: node.k,
+        type: node.type,
+        path: node.path,
+        displayPath: node.displayPath,
+        depth: node.depth,
+        isRoot: node.isRoot,
+        collapsed: node.collapsed,
+        hasChildren: node.children && node.children.length > 0,
+        displayValue: displayValue,
+        fullValue: typeof node.v === 'string' ? node.v : undefined,
+        childCount: childCount
+      });
+      
+      if (node.children && node.children.length > 0) {
+        for (let i = node.children.length - 1; i >= 0; i--) {
+          stack.push(node.children[i]);
+        }
       }
+    } else {
+      result.push({
+        id: node.id,
+        key: node.k,
+        type: node.type,
+        path: node.path,
+        displayPath: node.displayPath,
+        depth: node.depth,
+        isRoot: node.isRoot,
+        collapsed: node.collapsed,
+        hasChildren: true,
+        displayValue: displayValue,
+        fullValue: typeof node.v === 'string' ? node.v : undefined,
+        childCount: childCount
+      });
     }
   }
   
   return result;
 }
 
+function countNodes(root) {
+  if (!root) return 0;
+  
+  let count = 0;
+  const stack = [root];
+  
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node) continue;
+    
+    count++;
+    
+    if (node._isLazy && node._rawValue) {
+      if (Array.isArray(node._rawValue)) {
+        count += node._rawValue.length;
+      } else if (typeof node._rawValue === 'object') {
+        count += Object.keys(node._rawValue).length;
+      }
+    }
+    
+    if (node.children && node.children.length > 0) {
+      for (let i = node.children.length - 1; i >= 0; i--) {
+        stack.push(node.children[i]);
+      }
+    }
+  }
+  
+  return count;
+}
+
+function expandAll() {
+  if (!parsedTree) return;
+  
+  const stack = [parsedTree];
+  
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node) continue;
+    
+    node.collapsed = false;
+    const originalMaxChildren = node._maxChildren;
+    node._maxChildren = Infinity;
+    ensureChildren(node);
+    node._maxChildren = originalMaxChildren;
+    
+    if (node.children && node.children.length > 0) {
+      for (let i = node.children.length - 1; i >= 0; i--) {
+        stack.push(node.children[i]);
+      }
+    }
+  }
+}
+
+function collapseAll() {
+  if (!parsedTree) return;
+  
+  const stack = [parsedTree];
+  
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node) continue;
+    
+    node.collapsed = true;
+    
+    if (node.children && node.children.length > 0) {
+      for (let i = node.children.length - 1; i >= 0; i--) {
+        stack.push(node.children[i]);
+      }
+    }
+  }
+}
+
+function toggleNode(nodeId) {
+  if (!parsedTree) return { visibleNodes: [], totalNodes: 0 };
+  
+  const stack = [parsedTree];
+  
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node) continue;
+    
+    if (node.id === nodeId) {
+      node.collapsed = !node.collapsed;
+      if (!node.collapsed) {
+        const originalMaxChildren = node._maxChildren;
+        node._maxChildren = Infinity;
+        ensureChildren(node);
+        node._maxChildren = originalMaxChildren;
+      }
+      break;
+    }
+    
+    if (node.children && node.children.length > 0) {
+      for (let i = node.children.length - 1; i >= 0; i--) {
+        stack.push(node.children[i]);
+      }
+    }
+  }
+  
+  const visibleNodes = flattenTree(parsedTree);
+  return { visibleNodes, totalNodes: visibleNodes.length };
+}
+
+function estimateNodeCount(obj) {
+  let count = 0;
+  const stack = [obj];
+  
+  while (stack.length > 0 && count <= MAX_WORKER_TOTAL * 2) {
+    const current = stack.pop();
+    if (current === null || typeof current !== 'object') {
+      count++;
+      continue;
+    }
+    
+    count++;
+    
+    if (Array.isArray(current)) {
+      for (let i = current.length - 1; i >= 0; i--) {
+        stack.push(current[i]);
+      }
+    } else {
+      const keys = Object.keys(current);
+      for (let i = keys.length - 1; i >= 0; i--) {
+        stack.push(current[keys[i]]);
+      }
+    }
+  }
+  
+  return count;
+}
+
+const MAX_WORKER_TOTAL = 5000000;
+
+function parseJSONToFlatArray(text) {
+  try {
+    const data = JSON.parse(text);
+    
+    const result = [];
+    let idCounter = 0;
+    
+    const stack = [{ 
+      value: data, 
+      key: undefined, 
+      depth: 0, 
+      path: [],
+      isRoot: true 
+    }];
+    
+    while (stack.length > 0 && result.length < MAX_WORKER_TOTAL) {
+      const item = stack.pop();
+      const { value, key, depth, path, isRoot } = item;
+      
+      idCounter++;
+      
+      let type, displayValue, fullValue, childCount = 0;
+      
+      if (value === null) {
+        type = 'null';
+        displayValue = 'null';
+      } else if (typeof value === 'boolean') {
+        type = 'boolean';
+        displayValue = String(value);
+      } else if (typeof value === 'number') {
+        type = 'number';
+        displayValue = String(value);
+      } else if (typeof value === 'string') {
+        type = 'string';
+        fullValue = undefined;
+        displayValue = value.length > 200 ? value.substring(0, 200) + '...' : value;
+      } else if (Array.isArray(value)) {
+        type = 'array';
+        childCount = value.length;
+        displayValue = 'Array(' + value.length + ')';
+        
+        for (let i = value.length - 1; i >= 0; i--) {
+          if (result.length >= MAX_WORKER_TOTAL) break;
+          const newPath = [...path, '[' + i + ']'];
+          stack.push({
+            value: value[i],
+            key: '[' + i + ']',
+            depth: depth + 1,
+            path: newPath,
+            isRoot: false
+          });
+        }
+      } else if (typeof value === 'object') {
+        type = 'object';
+        const keys = Object.keys(value);
+        childCount = keys.length;
+        displayValue = 'Object(' + keys.length + ')';
+        
+        for (let i = keys.length - 1; i >= 0; i--) {
+          if (result.length >= MAX_WORKER_TOTAL) break;
+          const k = keys[i];
+          const newPath = [...path, k];
+          stack.push({
+            value: value[k],
+            key: k,
+            depth: depth + 1,
+            path: newPath,
+            isRoot: false
+          });
+        }
+      } else {
+        type = 'unknown';
+        displayValue = String(value);
+      }
+      
+      const displayPath = path.length > 0 ? path.join('.') : '';
+      
+      result.push({
+        id: idCounter,
+        key: key,
+        type: type,
+        path: path,
+        displayPath: displayPath,
+        depth: depth,
+        isRoot: isRoot,
+        collapsed: false,
+        hasChildren: childCount > 0,
+        displayValue: displayValue,
+        fullValue: fullValue,
+        childCount: childCount
+      });
+    }
+    
+    return {
+      nodes: result,
+      truncated: result.length >= MAX_WORKER_TOTAL,
+      total: result.length
+    };
+    
+  } catch (err) {
+    throw new Error('解析失败: ' + err.message);
+  }
+}
+
 function streamingIndex(text) {
-  const maxLines = 10000;
-  const maxKeys = 100000;
-  const lines = new Int32Array(maxLines);
-  const keys = [];
-  const keyPositions = new Int32Array(maxKeys);
-  const keyLengths = new Int32Array(maxKeys);
-  const depths = new Int32Array(maxKeys);
+  var maxLines = Math.min(text.length / 2, 5000000);
+  var maxKeys = Math.min(text.length / 10, 500000);
   
-  let lineCount = 0;
-  let keyCount = 0;
-  let inString = false;
-  let escape = false;
-  let depth = 0;
-  let keyStart = -1;
-  let keyLength = 0;
-  let lastKey = '';
+  var lines = [];
+  var keys = [];
+  var keyPositions = [];
+  var keyLengths = [];
+  var depths = [];
   
-  for (let i = 0; i < text.length && (lineCount < maxLines || keyCount < maxKeys); i++) {
-    const char = text.charCodeAt(i);
+  var lineCount = 0;
+  var keyCount = 0;
+  var depth = 0;
+  var inString = false;
+  var isEscaped = false;
+  var keyStart = -1;
+  var keyLength = 0;
+  
+  lines[lineCount++] = 0;
+  
+  for (var i = 0; i < text.length; i++) {
+    var char = text.charAt(i);
     
-    if (escape) {
-      escape = false;
+    if (isEscaped) {
+      isEscaped = false;
       continue;
     }
     
-    if (char === 92) {
-      escape = true;
+    if (char === '\\\\' && inString) {
+      isEscaped = true;
       continue;
     }
     
-    if (char === 34) {
+    if (char === '"') {
       if (!inString) {
         inString = true;
         keyStart = i + 1;
         keyLength = 0;
       } else {
         inString = false;
-        if (keyCount < maxKeys && keyStart >= 0) {
-          keys.push(text.substring(keyStart, keyStart + keyLength));
-          keyPositions[keyCount] = keyStart;
-          keyLengths[keyCount] = keyLength;
-          depths[keyCount] = depth;
-          keyCount++;
+        if (keyStart > 0 && keyLength > 0) {
+          if (keyCount < maxKeys) {
+            keys[keyCount] = (lineCount << 16) | depth;
+            keyPositions[keyCount] = keyStart;
+            keyLengths[keyCount] = keyLength;
+            depths[keyCount] = depth;
+            keyCount++;
+          }
+          keyStart = -1;
+          keyLength = 0;
         }
-        keyStart = -1;
-        keyLength = 0;
       }
       continue;
     }
@@ -424,19 +909,19 @@ function streamingIndex(text) {
       continue;
     }
     
-    if (char === 10) {
+    if (char === '\\n') {
       if (lineCount < maxLines) {
         lines[lineCount++] = i + 1;
       }
       continue;
     }
     
-    if (char === 123 || char === 91) {
+    if (char === '{' || char === '[') {
       depth++;
       continue;
     }
     
-    if (char === 125 || char === 93) {
+    if (char === '}' || char === ']') {
       depth--;
       continue;
     }
@@ -512,129 +997,425 @@ function createRootNode() {
 }
 
 function continueBackgroundParse(totalKeys, currentPos) {
-  const batchSize = 1000;
-  const endPos = Math.min(currentPos + batchSize, totalKeys);
+  const BATCH_SIZE = 5000;
+  const index = self._streamingIndex;
+  const content = self._content;
   
-  const nodes = getNodesFromIndex(self._streamingIndex, self._content, currentPos, endPos);
+  if (!index || !content) return;
+  
+  const start = currentPos;
+  const end = Math.min(start + BATCH_SIZE, index.keyCount);
+  
+  const nodes = getNodesFromIndex(index, content, start, end);
   
   self.postMessage({
-    type: 'nodesReady',
-    nodes: nodes,
-    start: currentPos,
-    end: endPos,
-    totalNodes: totalKeys
+    type: 'parsed',
+    visibleNodes: nodes,
+    totalNodes: index.totalNodes,
+    isComplete: end >= index.keyCount,
+    progress: Math.min(end / index.totalNodes, 1)
   });
   
-  if (endPos < totalKeys) {
-    setTimeout(function() {
-      continueBackgroundParse(totalKeys, endPos);
-    }, 10);
+  if (end < index.keyCount) {
+    setTimeout(() => continueBackgroundParse(totalKeys, end), 50);
   }
 }
 
-function parseShardFast(data, basePath, baseId, maxDepth, maxNodes) {
+function buildPositionIndex(data) {
   const nodes = [];
-  let idCounter = baseId;
-  let totalCount = 0;
-  let truncated = false;
+  const index = {
+    totalNodes: 0,
+    keys: [],
+    depths: [],
+    hasChildren: [],
+    types: [],
+    paths: []
+  };
   
-  const stack = [{
-    value: data,
-    key: basePath,
-    depth: 0,
-    path: basePath,
-    isRoot: true
-  }];
+  const stack = [{ value: data, key: undefined, path: [], depth: 0, isRoot: true }];
   
-  while (stack.length > 0 && !truncated) {
+  while (stack.length > 0) {
     const item = stack.pop();
-    const { value, key, depth, path, isRoot } = item;
+    const { value, key, path, depth, isRoot } = item;
     
-    idCounter++;
-    totalCount++;
-    
-    if (totalCount > maxNodes) {
-      truncated = true;
-      break;
-    }
-    
-    let type, displayValue, fullValue, childCount = 0;
+    let type, displayValue, fullValue, hasChildren = false, childCount = 0;
     
     if (value === null) {
       type = 'null';
       displayValue = 'null';
+      fullValue = null;
     } else if (typeof value === 'boolean') {
       type = 'boolean';
-      displayValue = String(value);
+      displayValue = value ? 'true' : 'false';
+      fullValue = value;
     } else if (typeof value === 'number') {
       type = 'number';
       displayValue = String(value);
+      fullValue = value;
     } else if (typeof value === 'string') {
       type = 'string';
-      fullValue = undefined;
-      displayValue = value.length > 200 ? value.substring(0, 200) + '...' : value;
+      displayValue = '"' + value.substring(0, 100) + (value.length > 100 ? '...' : '') + '"';
+      fullValue = value;
     } else if (Array.isArray(value)) {
       type = 'array';
       childCount = value.length;
-      displayValue = 'Array(' + value.length + ')';
-      
-      for (let i = value.length - 1; i >= 0; i--) {
-        if (totalCount >= maxNodes) {
-          truncated = true;
-          break;
-        }
-        const newPath = path ? path + '[' + i + ']' : '[' + i + ']';
-        stack.push({
-          value: value[i],
-          key: '[' + i + ']',
-          depth: depth + 1,
-          path: newPath,
-          isRoot: false
-        });
-      }
+      hasChildren = childCount > 0;
+      displayValue = '[' + childCount + ']';
+      fullValue = value;
     } else if (typeof value === 'object') {
       type = 'object';
-      const keys = Object.keys(value);
-      childCount = keys.length;
-      displayValue = 'Object(' + keys.length + ')';
-      
-      for (let i = keys.length - 1; i >= 0; i--) {
-        if (totalCount >= maxNodes) {
-          truncated = true;
-          break;
-        }
-        const k = keys[i];
-        const newPath = path ? path + '.' + k : k;
-        stack.push({
-          value: value[k],
-          key: k,
-          depth: depth + 1,
-          path: newPath,
-          isRoot: false
-        });
-      }
+      childCount = Object.keys(value).length;
+      hasChildren = childCount > 0;
+      displayValue = '{' + childCount + '}';
+      fullValue = value;
     } else {
       type = 'unknown';
       displayValue = String(value);
+      fullValue = value;
     }
     
-    nodes.push({
-      id: idCounter,
+    const nodePath = path.join('.');
+    
+    const node = {
+      id: index.totalNodes + 1,
       key: key,
       type: type,
-      path: path,
-      displayPath: path,
       depth: depth,
-      isRoot: isRoot,
-      collapsed: false,
-      hasChildren: childCount > 0,
+      path: nodePath,
       displayValue: displayValue,
-      fullValue: fullValue,
-      childCount: childCount
+      fullValue: hasChildren ? null : fullValue,
+      hasChildren: hasChildren,
+      childCount: childCount,
+      isExpanded: hasChildren && depth < 3,
+      pathParts: [...path]
+    };
+    
+    nodes.push(node);
+    
+    index.keys.push(key);
+    index.depths.push(depth);
+    index.hasChildren.push(hasChildren);
+    index.types.push(type);
+    index.paths.push([...path]);
+    index.totalNodes++;
+    
+    if (hasChildren) {
+      if (Array.isArray(value)) {
+        for (let i = value.length - 1; i >= 0; i--) {
+          const childKey = '[' + i + ']';
+          stack.push({
+            value: value[i],
+            key: childKey,
+            path: [...path, childKey],
+            depth: depth + 1,
+            isRoot: false
+          });
+        }
+      } else {
+        const keys = Object.keys(value);
+        for (let i = keys.length - 1; i >= 0; i--) {
+          const k = keys[i];
+          stack.push({
+            value: value[k],
+            key: k,
+            path: [...path, k],
+            depth: depth + 1,
+            isRoot: false
+          });
+        }
+      }
+    }
+  }
+  
+  return { index, nodes };
+}
+
+function buildDepthStats(index) {
+  const maxDepth = Math.max(...index.depths) + 1;
+  const stats = {
+    totalByDepth: new Array(maxDepth).fill(0),
+    cumulativeByDepth: new Array(maxDepth).fill(0),
+    maxDepth
+  };
+  
+  for (let i = 0; i < index.totalNodes; i++) {
+    stats.totalByDepth[index.depths[i]]++;
+  }
+  
+  let cumulative = 0;
+  for (let d = 0; d < maxDepth; d++) {
+    cumulative += stats.totalByDepth[d];
+    stats.cumulativeByDepth[d] = cumulative;
+  }
+  
+  return stats;
+}
+
+function getValueByPath(data, path) {
+  let current = data;
+  for (const part of path) {
+    if (part.startsWith('[') && part.endsWith(']')) {
+      const index = parseInt(part.slice(1, -1));
+      current = current[index];
+    } else {
+      current = current[part];
+    }
+    if (current === undefined || current === null) break;
+  }
+  return current;
+}
+
+function createNodeWithPath(value, key, depth, path, hasChildren) {
+  let type, displayValue, fullValue, childCount = 0;
+  
+  if (value === null) {
+    type = 'null';
+    displayValue = 'null';
+    fullValue = null;
+  } else if (typeof value === 'boolean') {
+    type = 'boolean';
+    displayValue = value ? 'true' : 'false';
+    fullValue = value;
+  } else if (typeof value === 'number') {
+    type = 'number';
+    displayValue = String(value);
+    fullValue = value;
+  } else if (typeof value === 'string') {
+    type = 'string';
+    displayValue = '"' + value.substring(0, 100) + (value.length > 100 ? '...' : '') + '"';
+    fullValue = value;
+  } else if (Array.isArray(value)) {
+    type = 'array';
+    childCount = value.length;
+    displayValue = '[' + childCount + ']';
+    fullValue = value;
+  } else if (typeof value === 'object') {
+    type = 'object';
+    childCount = Object.keys(value).length;
+    displayValue = '{' + childCount + '}';
+    fullValue = value;
+  } else {
+    type = 'unknown';
+    displayValue = String(value);
+    fullValue = value;
+  }
+  
+  const nodePath = path.join('.');
+  
+  return {
+    id: 0,
+    key: key,
+    type: type,
+    depth: depth,
+    path: nodePath,
+    displayValue: displayValue,
+    fullValue: fullValue,
+    hasChildren: hasChildren,
+    childCount: childCount,
+    isExpanded: hasChildren && depth < 3,
+    pathParts: path
+  };
+}
+
+function parseRange(data, index, start, end) {
+  const nodes = [];
+  
+  if (!index || !data) return nodes;
+  
+  for (let i = start; i < end && i < (index.keyCount || 0); i++) {
+    const key = index.keyPositions ? 'key_' + i : 'unknown';
+    const depth = index.depths ? index.depths[i] : 0;
+    
+    nodes.push({
+      id: i + 1,
+      key: key,
+      type: 'object',
+      depth: depth,
+      path: '',
+      displayPath: key,
+      displayValue: '{}',
+      fullValue: null,
+      hasChildren: true,
+      childCount: 0,
+      isExpanded: depth < 2,
+      collapsed: false,
+      isRoot: false,
+      line: 0
     });
   }
   
-  return { nodes, lastId: idCounter, truncated };
+  return nodes;
+}
+
+function parseAndExpandAllFast(text) {
+  try {
+    self.postMessage({ type: 'parseStart' });
+    
+    const startTime = performance.now();
+    
+    // 流式解析并分批发送，避免内存溢出
+    const data = JSON.parse(text);
+    const batchSize = 5000; // 大幅增加批次大小
+    const maxPerFrame = 1000; // 每帧处理更多节点
+    let totalNodes = 0;
+    let sentCount = 0;
+    let isTruncated = false;
+    
+    const result = [];
+    let idCounter = 0;
+    
+    // 使用数组栈，更高效
+    const stack = [{ 
+      value: data, 
+      key: undefined, 
+      depth: 0, 
+      path: '',
+      isRoot: true 
+    }];
+    
+    // 发送当前批次的节点
+    function sendCurrentBatch() {
+      if (result.length > 0) {
+        self.postMessage({
+          type: 'parsed',
+          visibleNodes: result,
+          totalNodes: totalNodes,
+          truncated: isTruncated,
+          isComplete: false,
+          progress: sentCount / Math.max(totalNodes, sentCount + 1)
+        });
+        
+        sentCount += result.length;
+        result.length = 0; // 清空数组，复用内存
+      }
+    }
+    
+    // 继续解析并发送
+    function continueParsing() {
+      let processedCount = 0;
+      
+      while (stack.length > 0 && !isTruncated) {
+        // 弹出栈顶元素
+        const item = stack.pop();
+        
+        const { value, key, depth, path, isRoot } = item;
+        
+        idCounter++;
+        totalNodes++;
+        
+        let type, displayValue, fullValue, childCount = 0;
+        
+        if (value === null) {
+          type = 'null';
+          displayValue = 'null';
+        } else if (typeof value === 'boolean') {
+          type = 'boolean';
+          displayValue = String(value);
+        } else if (typeof value === 'number') {
+          type = 'number';
+          displayValue = String(value);
+        } else if (typeof value === 'string') {
+          type = 'string';
+          fullValue = undefined;
+          displayValue = value.length > 200 ? value.substring(0, 200) + '...' : value;
+        } else if (Array.isArray(value)) {
+          type = 'array';
+          childCount = value.length;
+          displayValue = 'Array(' + value.length + ')';
+          
+          // 倒序压栈，处理所有元素
+          for (let i = value.length - 1; i >= 0; i--) {
+            if (totalNodes >= MAX_WORKER_TOTAL) {
+              isTruncated = true;
+              break;
+            }
+            const newPath = path ? path + '[' + i + ']' : '[' + i + ']';
+            stack.push({
+              value: value[i],
+              key: '[' + i + ']',
+              depth: depth + 1,
+              path: newPath,
+              isRoot: false
+            });
+          }
+        } else if (typeof value === 'object') {
+          type = 'object';
+          const keys = Object.keys(value);
+          childCount = keys.length;
+          displayValue = 'Object(' + keys.length + ')';
+          
+          // 倒序压栈，处理所有元素
+          for (let i = keys.length - 1; i >= 0; i--) {
+            if (totalNodes >= MAX_WORKER_TOTAL) {
+              isTruncated = true;
+              break;
+            }
+            const k = keys[i];
+            const newPath = path ? path + '.' + k : k;
+            stack.push({
+              value: value[k],
+              key: k,
+              depth: depth + 1,
+              path: newPath,
+              isRoot: false
+            });
+          }
+        } else {
+          type = 'unknown';
+          displayValue = String(value);
+        }
+        
+        result.push({
+          id: idCounter,
+          key: key,
+          type: type,
+          path: path,
+          displayPath: path,
+          depth: depth,
+          isRoot: isRoot,
+          collapsed: false,
+          hasChildren: childCount > 0,
+          displayValue: displayValue,
+          fullValue: fullValue,
+          childCount: childCount
+        });
+        
+        // 每解析batchSize个节点就发送一次
+        if (result.length >= batchSize) {
+          sendCurrentBatch();
+        }
+        
+        // 每处理一定数量后让出主线程
+        processedCount++;
+        if (processedCount >= maxPerFrame) {
+          setTimeout(continueParsing, 0);
+          return;
+        }
+      }
+      
+      // 发送剩余的节点
+      sendCurrentBatch();
+      
+      const parseTime = performance.now() - startTime;
+      
+      // 所有节点发送完成
+      self.postMessage({
+        type: 'parsed',
+        visibleNodes: [],
+        totalNodes: totalNodes,
+        parseTime: parseTime,
+        truncated: isTruncated,
+        isComplete: true,
+        progress: 1
+      });
+    }
+    
+    // 开始流式解析
+    continueParsing();
+    
+  } catch (err) {
+    self.postMessage({ type: 'error', message: err.message });
+  }
 }
 
 self.onmessage = function(e) {
@@ -1516,7 +2297,6 @@ function handleWorkerMessage(e, workerIndex) {
       } else {
         visibleNodes.value = markRaw([...visibleNodes.value, ...nodes]);
       }
-      
       totalNodes.value = cnt;
       
       if (progress !== undefined) {
@@ -1855,58 +2635,448 @@ async function parseJSONContent(content, size, fileId = null, readDuration = 0) 
         } catch (e) {
           console.warn('Quick parse failed:', e);
         }
+        
+        // 完成渲染可见区步骤
+        const renderDuration = Math.round(performance.now() - renderStartTime);
+        completeParseStep('render', `${totalNodes.value.toLocaleString()} 节点`, renderDuration);
+        
+        currentNodes = [];
+        isParsing.value = false;
+      } else {
+        fallbackParse(content, size, Date.now(), fileId);
       }
-    } catch (e) {
-      console.error('Parse error:', e);
-      errorMessage.value = e.message;
+      
+    } catch (validationError) {
+      if (validationError instanceof Error) {
+        const errorInfo = errorHandler.handleValidationError(validationError, content);
+        errorMessage.value = errorInfo.message;
+        warningMessage.value = errorInfo.suggestion;
+      } else {
+        errorMessage.value = validationError.message || '解析失败';
+      }
       parseStatus.value = 'error';
-      completeParseStep('error', e.message);
-    } finally {
       isParsing.value = false;
     }
-  } catch (e) {
-    console.error('Parse error:', e);
-    errorMessage.value = e.message;
+    
+  } catch (err) {
+    errorMessage.value = '解析初始化失败: ' + err.message;
     parseStatus.value = 'error';
-    completeParseStep('error', e.message);
     isParsing.value = false;
+    console.error('Parse init error:', err);
   }
 }
+
+async function selectFile(fileId) {
+  isParsing.value = false;
+  currentFileId.value = fileId;
+  const file = files.value.find(f => f.id === fileId);
+  
+  if (!file) return;
+  
+  file.lastOpen = Date.now();
+  
+  if (pendingParseTask) {
+    clearTimeout(pendingParseTask);
+    pendingParseTask = null;
+  }
+  
+  destroyWorkers();
+  
+  await new Promise(resolve => setTimeout(resolve, 10));
+  
+  initWorkers();
+  
+  visibleNodes.value = [];
+  jsonTree.value = null;
+  errorMessage.value = '';
+  warningMessage.value = '';
+  totalNodes.value = 0;
+  parseStatus.value = '';
+  
+  if (parseCache.has(fileId)) {
+    const cached = parseCache.get(fileId);
+    
+    if (cached.visibleNodes && cached.visibleNodes.length > 0) {
+      showConsole.value = true;
+      visibleNodes.value = markRaw(cached.visibleNodes);
+      jsonTree.value = cached.jsonTree;
+      totalNodes.value = cached.visibleNodes.length;
+      warningMessage.value = cached.warningMessage;
+      parseStatus.value = '';
+      return;
+    } else {
+      parseCache.delete(fileId);
+    }
+  }
+  
+  parseStatus.value = 'parsing';
+  
+  pendingParseTask = setTimeout(() => {
+    parseJSONContent(file.content, file.size, fileId, file.readDuration);
+    pendingParseTask = null;
+  }, 50);
+}
+
+function handleDragOver(e) {
+  e.preventDefault();
+  isDragging.value = true;
+}
+
+function handleDragLeave(e) {
+  e.preventDefault();
+  isDragging.value = false;
+}
+
+function handleDrop(e) {
+  e.preventDefault();
+  isDragging.value = false;
+  const droppedFiles = Array.from(e.dataTransfer.files);
+  handleOpenFiles(droppedFiles);
+}
+
+async function handleFileSelect(e) {
+  await handleOpenFiles(Array.from(e.target.files));
+  e.target.value = '';
+}
+
+async function handleOpenFiles(fileList) {
+  if (!fileList || fileList.length === 0) {
+    fileInputRef.value?.click();
+    return;
+  }
+  
+  // 立即显示解析日志
+  showConsole.value = true;
+  
+  let lastFileId = null;
+  for (const file of fileList) {
+    if (!file.name.endsWith('.json') && file.type !== 'application/json') continue;
+    
+    const readStartTime = performance.now();
+    const content = await file.text();
+    const readDuration = Math.round(performance.now() - readStartTime);
+    const size = new Blob([content]).size;
+    const fileData = {
+      id: Date.now() + Math.random(),
+      name: file.name,
+      content,
+      size,
+      readDuration,
+      lastOpen: Date.now()
+    };
+    
+    const existingFile = files.value.find(f => f.name === file.name);
+    if (existingFile) {
+      existingFile.content = content;
+      existingFile.size = size;
+      existingFile.readDuration = readDuration;
+      existingFile.lastOpen = Date.now();
+      lastFileId = existingFile.id;
+    } else {
+      files.value.push(fileData);
+      lastFileId = fileData.id;
+    }
+  }
+  
+  if (lastFileId) {
+    selectFile(lastFileId);
+  }
+}
+
+function deleteFileFromCache(fileId) {
+  const index = files.value.findIndex(f => f.id === fileId);
+  if (index > -1) {
+    files.value.splice(index, 1);
+    parseCache.delete(fileId);
+    
+    if (currentFileId.value === fileId) {
+      isParsing.value = false;
+      
+      destroyWorkers();
+      
+      currentFileId.value = files.value.length > 0 ? files.value[0].id : null;
+      visibleNodes.value = [];
+      jsonTree.value = null;
+      totalNodes.value = 0;
+      fileSize.value = 0;
+      parseTime.value = 0;
+      warningMessage.value = '';
+      errorMessage.value = '';
+      parseStatus.value = '';
+      
+      if (currentFileId.value) {
+        setTimeout(() => selectFile(currentFileId.value), 10);
+      }
+    }
+  }
+}
+
+function clearCache() {
+  isParsing.value = false;
+  
+  stopMemoryMonitor();
+  
+  destroyWorkers();
+  
+  if (pendingParseTask) {
+    clearTimeout(pendingParseTask);
+    pendingParseTask = null;
+  }
+  
+  parseCache.clear();
+  files.value = [];
+  currentFileId.value = null;
+  visibleNodes.value = [];
+  jsonTree.value = null;
+  totalNodes.value = 0;
+  fileSize.value = 0;
+  parseTime.value = 0;
+  warningMessage.value = '';
+  errorMessage.value = '';
+  parseStatus.value = '';
+}
+
+function toggleNode(nodeId) {
+  if (worker && !isParsing.value) {
+    worker.postMessage({ type: 'toggle', nodeId });
+  }
+}
+
+function expandAll() {
+  if (worker && !isParsing.value) {
+    worker.postMessage({ type: 'expandAll' });
+  }
+}
+
+function collapseAll() {
+  if (worker && !isParsing.value) {
+    worker.postMessage({ type: 'collapseAll' });
+  }
+}
+
+function toggleFormatCompress() {
+  isTextMode.value = !isTextMode.value;
+}
+
+function toggleEscape() {
+  isEscaped.value = !isEscaped.value;
+}
+
+function exportJSON() {
+  if (!currentFile.value) return;
+  
+  let content = currentFile.value.content;
+  if (!isTextMode.value) {
+    try {
+      const parsed = JSON.parse(content);
+      content = JSON.stringify(parsed, null, 2);
+    } catch (e) {
+      console.error('Failed to format JSON:', e);
+    }
+  }
+  
+  const blob = new Blob([content], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = currentFile.value.name;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function formatJSON() {
+  if (!currentFile.value) return;
+  
+  try {
+    const parsed = JSON.parse(currentFile.value.content);
+    textContent.value = JSON.stringify(parsed, null, 2);
+    isTextMode.value = true;
+  } catch (e) {
+    errorMessage.value = 'JSON 格式错误，无法格式化';
+  }
+}
+
+function handleSearch(query) {
+  searchQuery.value = query;
+  
+  if (query) {
+    const matches = visibleNodes.value.filter(n => n && n.k && n.k.toLowerCase().includes(query.toLowerCase()));
+    searchMatchCount.value = matches.length;
+    searchMatchIndex.value = 0;
+  } else {
+    searchMatchCount.value = 0;
+    searchMatchIndex.value = -1;
+  }
+}
+
+function handleSearchNext() {
+  if (searchMatchCount.value === 0) return;
+  searchMatchIndex.value = (searchMatchIndex.value + 1) % searchMatchCount.value;
+}
+
+function handleSearchPrev() {
+  if (searchMatchCount.value === 0) return;
+  searchMatchIndex.value = (searchMatchIndex.value - 1 + searchMatchCount.value) % searchMatchCount.value;
+}
+
+function handleSelectNode(node) {
+  selectedNode.value = node;
+  showDetailPanel.value = true;
+}
+
+function handleUpdateValue({ nodeId, value }) {
+  console.log('Update value:', nodeId, value);
+}
+
+function handlePasteContent(content) {
+  try {
+    JSON.parse(content);
+    const fileData = {
+      id: Date.now() + Math.random(),
+      name: 'pasted.json',
+      content,
+      size: new Blob([content]).size,
+      lastOpen: Date.now()
+    };
+    files.value.push(fileData);
+    selectFile(fileData.id);
+  } catch (e) {
+    errorMessage.value = '粘贴的内容不是有效的 JSON';
+  }
+}
+
+function copyPath(path) {
+  navigator.clipboard.writeText(path);
+}
+
+function handleScroll(pos) {
+  cursorPosition.value = pos;
+}
+
+function handleNeedNodes(start, end) {
+  if (!blockCacheManager) return;
+  
+  const blockSize = blockCacheManager.blockSize;
+  const startBlock = Math.max(0, Math.floor(start / blockSize) - 1);
+  const endBlock = Math.ceil(end / blockSize) + 1;
+  
+  console.log('[handleNeedNodes] start:', start, 'end:', end, 
+              'startBlock:', startBlock, 'endBlock:', endBlock,
+              'blockSize:', blockSize);
+  
+  blockCacheManager.loadBlocks(startBlock, endBlock);
+}
+
+function toggleTheme() {
+  document.documentElement.classList.toggle('dark');
+}
+
+function handleScrollToNode(nodeId) {
+  console.log('Scroll to node:', nodeId);
+}
+
+const workerUrl = URL.createObjectURL(new Blob([workerCode], { type: 'application/javascript' }));
+
+onMounted(() => {
+  initWorker();
+  
+  const sampleContent = JSON.stringify(SAMPLE_JSON, null, 2);
+  const sampleFile = {
+    id: 1,
+    name: 'sample.json',
+    content: sampleContent,
+    size: new Blob([sampleContent]).size,
+    lastOpen: Date.now()
+  };
+  files.value.push(sampleFile);
+  selectFile(1);
+});
+
+onUnmounted(() => {
+  stopMemoryMonitor();
+  destroyWorkers();
+  URL.revokeObjectURL(workerUrl);
+});
 </script>
 
 <template>
-  <div class="app">
+  <div class="app" @dragover="handleDragOver" @dragleave="handleDragLeave" @drop="handleDrop">
+    <input
+      ref="fileInputRef"
+      type="file"
+      accept=".json,application/json"
+      multiple
+      style="display: none;"
+      @change="handleFileSelect"
+    />
+    <div v-if="isDragging" class="drag-overlay">
+      <div class="drag-message">释放文件以打开</div>
+    </div>
+
     <header class="title-bar">
       <div class="title-left">
-        <LogoIcon :size="20" class="logo-icon" />
-        <span class="logo-text">JSON Pro</span>
+        <LogoIcon :size="20" class="logo-icon"/>
+        <span class="logo-text">JSON<span class="logo-pro">Pro</span></span>
+        <span class="title-separator">|</span>
+        <span class="doc-title" v-if="currentFile">{{ currentFile.name }}</span>
       </div>
-      <nav class="title-right">
-        <button class="action-btn" @click="formatJson">
-          格式化
+      <div class="title-center">
+        <button class="action-btn" @click="toggleFormatCompress">
+          <FormatIcon :size="14" class="btn-icon"/>
+          <span>{{ isTextMode ? '格式化' : '压缩' }}</span>
         </button>
-        <button class="action-btn" @click="compressJson">
-          压缩
+        <button class="action-btn" @click="toggleEscape" :disabled="!currentFile">
+          <EscapeIcon :size="14" class="btn-icon"/>
+          <span>{{ isEscaped ? '反转义' : '转义' }}</span>
         </button>
-        <button class="btn-primary" @click="exportJson">
-          导出
+        <button class="action-btn" @click="exportJSON" :disabled="!currentFile">
+          <SaveIcon :size="14" class="btn-icon"/>
+          <span>导出</span>
         </button>
-      </nav>
+      </div>
+      <div class="title-right">
+        <button class="icon-btn" title="切换主题" @click="toggleTheme">
+          <ThemeIcon :size="16" class="btn-icon"/>
+        </button>
+        <button class="icon-btn" title="更多" @click="showCommandPalette = true">
+          <MoreIcon :size="16" class="btn-icon"/>
+        </button>
+      </div>
     </header>
-    
-    <div class="main-content">
-      <SideBar
-        :files="files"
-        :currentFileId="currentFileId"
-        @selectFile="selectFile"
-        @deleteFile="deleteFile"
-        @openFiles="openFiles"
-        @clearCache="clearCache"
-      />
-      
-      <div class="editor-area">
+
+    <ParseProgress
+      :progress="parseProgress"
+      :current-step="currentStep"
+      :is-parsing="isParsing"
+    />
+
+    <div class="app-layout">
+      <div class="main-content">
+        <SideBar
+          :files="files"
+          :currentFileId="currentFileId"
+          @selectFile="selectFile"
+          @deleteFile="deleteFileFromCache"
+          @openFiles="handleOpenFiles"
+          @clearCache="clearCache"
+          @expandAll="expandAll"
+          @collapseAll="collapseAll"
+        />
+
+      <main class="editor-area">
+        <EditorTabs
+          :files="files"
+          :currentFileId="currentFileId"
+          @selectTab="selectFile"
+          @closeTab="deleteFileFromCache"
+        />
+        
         <JsonTreeView
-          :visibleNodes="visibleNodes"
+          v-show="!isTextMode && (parseStatus !== 'parsing' || visibleNodes.length > 0)"
+          ref="containerRef"
+          :visibleNodes="filteredVisibleNodes"
           :totalNodes="totalNodes"
           :searchQuery="searchQuery"
           :currentFile="currentFile"
@@ -1914,37 +3084,283 @@ async function parseJSONContent(content, size, fileId = null, readDuration = 0) 
           :errorMessage="errorMessage"
           :searchMatchIndex="searchMatchIndex"
           :searchMatchCount="searchMatchCount"
-          :memoryIndex="memoryIndex"
-          :currentFileText="currentFileText"
+          :memory-index="memoryIndex"
+          :current-file-text="currentFileText"
           :onNeedNodes="handleNeedNodes"
           @toggleNode="toggleNode"
           @scroll="handleScroll"
-          @selectNode="selectNode"
+          @selectNode="handleSelectNode"
+          @copyPath="copyPath"
           @search="handleSearch"
-          @searchNext="searchNext"
-          @searchPrev="searchPrev"
-          @pasteContent="handlePaste"
-          ref="treeViewRef"
+          @searchNext="handleSearchNext"
+          @searchPrev="handleSearchPrev"
+          @pasteContent="handlePasteContent"
+          @openFiles="handleOpenFiles"
         />
+        <div v-show="isTextMode" class="text-view">
+          <textarea 
+            class="text-content" 
+            v-model="textContent"
+            spellcheck="false"
+          ></textarea>
+        </div>
         
-        <ConsolePanel
-          :steps="parseSteps"
-          :isExpanded="showConsole"
-          :totalNodes="totalNodes"
-          @toggle="toggleConsole"
-          @clear="clearLog"
-        />
-      </div>
-    </div>
-    
-    <StatusBar
-      :fileSize="fileSize"
-      :totalNodes="totalNodes"
-      :parseTime="parseTime"
-      :isParsing="isParsing"
-      :parseStatus="parseStatus"
-      :isConsoleOpen="showConsole"
-      @toggle-console="toggleConsole"
+      </main>
+
+      <DetailPanel
+        v-if="showDetailPanel"
+        :node="selectedNode"
+        :visible="showDetailPanel"
+        @close="showDetailPanel = false"
+        @updateValue="handleUpdateValue"
+      />
+    </div> <!-- .main-content -->
+
+    <ConsolePanel
+      :steps="parseSteps"
+      :is-expanded="showConsole"
+      :background-progress="backgroundProgress"
+      :total-nodes="totalNodes"
+      @toggle="showConsole = !showConsole"
+      @copy="copyLog"
+      @background="runInBackground"
+      @clear="clearLog"
     />
-  </div>
+
+    <footer class="app-footer">
+      <StatusBar
+        :fileSize="fileSize"
+        :totalNodes="totalNodes"
+        :parseTime="parseTime"
+        :is-parsing="isParsing"
+        :parse-status="parseStatus"
+      />
+    </footer> <!-- .app-footer -->
+  </div> <!-- .app-layout -->
+  
+  <CommandPalette
+    :visible="showCommandPalette"
+    @close="showCommandPalette = false"
+    @openFiles="handleOpenFiles"
+    @saveFile="exportJSON"
+    @format="formatJSON"
+    @escape="toggleEscape"
+    @toggleTheme="toggleTheme"
+    @search="handleSearch"
+  />
+  </div> <!-- .app -->
 </template>
+
+<style scoped>
+.app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  color: #333333;
+  overflow: hidden;
+}
+
+.title-bar {
+  height: 40px;
+  background: #ffffff;
+  border-bottom: 1px solid #e5e5e5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  flex-shrink: 0;
+}
+
+.title-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.logo-icon {
+  color: #4a90d9;
+}
+
+.logo-text {
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+}
+
+.logo-pro {
+  color: #4a90d9;
+}
+
+.title-separator {
+  color: #ccc;
+}
+
+.doc-title {
+  font-size: 13px;
+  color: #666;
+}
+
+.title-center {
+  display: flex;
+  gap: 8px;
+}
+
+.action-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #333;
+  transition: all 0.2s;
+}
+
+.action-btn:hover:not(:disabled) {
+  background: #f5f5f5;
+  border-color: #ccc;
+}
+
+.action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-icon {
+  flex-shrink: 0;
+}
+
+.title-right {
+  display: flex;
+  gap: 4px;
+}
+
+.icon-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #666;
+  transition: all 0.2s;
+}
+
+.icon-btn:hover {
+  background: #f0f0f0;
+  color: #333;
+}
+
+.app-layout {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.main-content {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.app-footer {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 28px;
+  background: #f8f9fa;
+  border-top: 1px solid #dadce0;
+}
+
+.console-tabs-container {
+  border-top: 1px solid #e0e0e0;
+  background: #f8f9fa;
+}
+
+.console-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.console-tab {
+  padding: 4px 12px;
+  font-size: 12px;
+  color: #5f6368;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.console-tab:hover {
+  background: #e8eaed;
+}
+
+.console-tab.active {
+  background: #e0e0e0;
+  color: #202124;
+}
+
+.console-tab-content {
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.editor-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.text-view {
+  flex: 1;
+  overflow: hidden;
+}
+
+.text-content {
+  width: 100%;
+  height: 100%;
+  border: none;
+  outline: none;
+  resize: none;
+  padding: 16px;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #333;
+  background: #ffffff;
+  box-sizing: border-box;
+}
+
+.drag-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(74, 144, 217, 0.1);
+  border: 2px dashed #4a90d9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.drag-message {
+  font-size: 20px;
+  color: #4a90d9;
+  font-weight: 500;
+}
+
+</style>
