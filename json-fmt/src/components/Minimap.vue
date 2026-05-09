@@ -47,12 +47,8 @@ let isRendering = false
 let lastRenderTime = 0
 let loadingAnimationFrameId = null
 
-const effectiveTotalHeight = computed(() => {
-  const count = props.totalNodes > 0 ? props.totalNodes : props.visibleNodes.length
-  return count * 28
-})
-
-const maxScroll = computed(() => Math.max(0, effectiveTotalHeight.value - props.viewportHeight))
+// 使用从父组件传递的 totalHeight，确保与主内容区同步
+const maxScroll = computed(() => Math.max(0, props.totalHeight - props.viewportHeight))
 
 const scrollRatio = computed(() => {
   if (maxScroll.value <= 0) return 0
@@ -60,20 +56,24 @@ const scrollRatio = computed(() => {
 })
 
 const sliderStyle = computed(() => {
-  const viewportRatio = Math.min(props.viewportHeight / effectiveTotalHeight.value, 1)
-  const viewportPercent = viewportRatio * 100
+  const viewportRatio = Math.min(props.viewportHeight / props.totalHeight, 1)
+  const viewportPercent = Math.max(viewportRatio * 100, 3)
   const maxTop = 100 - viewportPercent
   const top = scrollRatio.value * maxTop
   
   return {
     top: `${Math.max(0, Math.min(top, maxTop))}%`,
-    height: `${Math.max(viewportPercent, 2)}%`,
-    minHeight: '8px'
+    height: `${viewportPercent}%`
   }
 })
 
-const MAX_NODES_TO_RENDER = 2000
 const RENDER_THROTTLE_MS = 32
+
+// 基于节点类型的颜色（不是深度）
+// 对象/数组：15% 靛蓝，字符串/数字：8% 靛蓝，其他：透明
+const COLOR_OBJECT = 'rgba(99, 102, 241, 0.15)'   // 对象/数组
+const COLOR_PRIMITIVE = 'rgba(99, 102, 241, 0.08)' // 字符串/数字/布尔/null
+const COLOR_EMPTY = 'transparent'                   // 空行
 
 function scheduleDrawMinimap() {
   const now = performance.now()
@@ -112,38 +112,17 @@ function drawMinimap() {
     
     ctx.clearRect(0, 0, width, height)
     
-    // 背景 - 极淡靛蓝
-    ctx.fillStyle = 'var(--minimap-bg)'
+    ctx.fillStyle = '#ffffff'
     ctx.fillRect(0, 0, width, height)
     
-    if (!props.visibleNodes || props.visibleNodes.length === 0) {
+    if (!props.memoryIndex || !props.content) {
       if (props.isParsing) {
         drawLoading(ctx, width, height)
       }
       return
     }
     
-    const totalCount = props.totalNodes > 0 ? props.totalNodes : props.visibleNodes.length
-    const rowHeight = height / Math.max(1, totalCount)
-    
-    if (totalCount > MAX_NODES_TO_RENDER) {
-      drawSampledOptimized(ctx, width, height, rowHeight, totalCount)
-    } else {
-      drawDetailed(ctx, width, height, rowHeight)
-    }
-    
-    // 顶部和底部渐变遮罩 - 融入背景（使用白色，因为 Canvas 不支持 CSS 变量）
-    const gradientTop = ctx.createLinearGradient(0, 0, 0, 10)
-    gradientTop.addColorStop(0, 'rgba(255, 255, 255, 1)')
-    gradientTop.addColorStop(1, 'rgba(255, 255, 255, 0)')
-    ctx.fillStyle = gradientTop
-    ctx.fillRect(0, 0, width, 10)
-    
-    const gradientBottom = ctx.createLinearGradient(0, height - 10, 0, height)
-    gradientBottom.addColorStop(0, 'rgba(255, 255, 255, 0)')
-    gradientBottom.addColorStop(1, 'rgba(255, 255, 255, 1)')
-    ctx.fillStyle = gradientBottom
-    ctx.fillRect(0, height - 10, width, 10)
+    drawFromIndex(ctx, width, height)
     
   } finally {
     isRendering = false
@@ -160,7 +139,7 @@ function drawLoading(ctx, width, height) {
   
   ctx.beginPath()
   ctx.arc(centerX, centerY, 3, 0, Math.PI * 2)
-  ctx.fillStyle = '#6366f1'  /* 靛蓝 */
+  ctx.fillStyle = '#6366f1'
   ctx.globalAlpha = alpha
   ctx.fill()
   ctx.globalAlpha = 1
@@ -171,98 +150,75 @@ function drawLoading(ctx, width, height) {
   })
 }
 
-// 根据深度获取靛蓝色（透明度变化）- 边缘纹理效果
-// 使用固定的靛蓝颜色值，因为 Canvas 不支持 CSS 变量
-const INDIGO_DEEP = 'rgba(99, 102, 241, 0.15)'    /* 对象/数组 */
-const INDIGO_MEDIUM = 'rgba(99, 102, 241, 0.08)'  /* 字符串/数字 */
-const INDIGO_LIGHT = 'rgba(99, 102, 241, 0.04)'   /* 空行/空白 */
-
-function getIndigoForDepth(depth, maxDepth = 8) {
-  const normalizedDepth = Math.min(depth / maxDepth, 1)
+function drawFromIndex(ctx, width, height) {
+  const index = props.memoryIndex
+  const text = props.content
+  const totalNodes = props.totalNodes
   
-  if (normalizedDepth > 0.6) {
-    return { color: INDIGO_DEEP, alpha: 1 }
-  } else if (normalizedDepth > 0.3) {
-    return { color: INDIGO_MEDIUM, alpha: 1 }
-  } else {
-    return { color: INDIGO_LIGHT, alpha: 1 }
-  }
-}
-
-function drawSampledOptimized(ctx, width, height, rowHeight, totalNodes) {
-  const barWidth = Math.max(width - 4, 2)
+  console.log('=== Minimap Debug ===')
+  console.log('memoryIndex:', index)
+  console.log('content length:', text?.length)
+  console.log('totalNodes:', totalNodes)
+  console.log('index.lineCount:', index?.lineCount)
+  console.log('index.keyCount:', index?.keyCount)
+  console.log('canvas height:', height)
   
-  if (props.memoryIndex && props.content) {
-    drawFromIndex(ctx, width, height, rowHeight, totalNodes, barWidth)
+  if (!index || !text || totalNodes === 0) {
+    console.log('缺少数据，无法绘制')
     return
   }
   
-  const nodes = props.visibleNodes
-  const effectiveSampleCount = Math.min(totalNodes, MAX_NODES_TO_RENDER)
-  const step = Math.max(1, Math.floor(totalNodes / effectiveSampleCount))
+  const rowHeight = height / Math.max(1, totalNodes)
+  const barWidth = Math.max(width - 4, 2)
   
-  for (let i = 0; i < totalNodes; i += step) {
-    const node = nodes[i]
-    if (!node) continue
-    
-    const y = i * rowHeight
-    const h = Math.min(step * rowHeight, 2)
-    
-    const depth = node.depth || 0
-    const { color, alpha } = getIndigoForDepth(depth)
-    
-    ctx.fillStyle = color
-    ctx.globalAlpha = alpha
-    ctx.fillRect(2, y, barWidth, h)
+  console.log('rowHeight:', rowHeight)
+  console.log('barWidth:', barWidth)
+  
+  const typeColors = {
+    '{': COLOR_OBJECT,
+    '[': COLOR_OBJECT,
+    '"': COLOR_PRIMITIVE,
+    "'": COLOR_PRIMITIVE,
+    't': COLOR_PRIMITIVE,
+    'f': COLOR_PRIMITIVE,
+    'n': COLOR_PRIMITIVE,
+    '-': COLOR_PRIMITIVE,
+    '0': COLOR_PRIMITIVE,
+    '1': COLOR_PRIMITIVE,
+    '2': COLOR_PRIMITIVE,
+    '3': COLOR_PRIMITIVE,
+    '4': COLOR_PRIMITIVE,
+    '5': COLOR_PRIMITIVE,
+    '6': COLOR_PRIMITIVE,
+    '7': COLOR_PRIMITIVE,
+    '8': COLOR_PRIMITIVE,
+    '9': COLOR_PRIMITIVE
   }
   
-  ctx.globalAlpha = 1
-}
-
-function drawFromIndex(ctx, width, height, rowHeight, totalNodes, barWidth) {
-  const index = props.memoryIndex
-  const content = props.content
-  
-  if (!index || !content) return
-  
-  const keyCount = index.keyCount || 0
-  if (keyCount === 0) return
-  
-  const sampleCount = Math.min(keyCount, MAX_NODES_TO_RENDER)
-  
-  for (let j = 0; j < sampleCount; j++) {
-    const i = Math.floor((j / sampleCount) * keyCount)
+  for (let k = 0; k < index.keyCount; k++) {
+    const line = index.keys[k] >> 8
+    const depth = index.keys[k] & 0xFF
+    const keyPos = index.keyPositions[k]
+    const keyLen = index.keyLengths[k]
     
-    const keyInfo = index.keys[i]
-    const depth = keyInfo & 0xFF
+    let valPos = keyPos + keyLen + 1
+    while (valPos < text.length && /[:\s]/.test(text[valPos])) {
+      valPos++
+    }
     
-    const y = (i / keyCount) * height
-    const h = Math.max(height / keyCount, 1)
+    if (valPos >= text.length) continue
     
-    const { color, alpha } = getIndigoForDepth(depth)
+    const firstChar = text[valPos]
+    const color = typeColors[firstChar] || COLOR_EMPTY
     
-    ctx.fillStyle = color
-    ctx.globalAlpha = alpha
-    ctx.fillRect(2, y, barWidth, h)
+    if (color !== COLOR_EMPTY) {
+      const y = line * rowHeight
+      const h = Math.max(rowHeight, 1)
+      
+      ctx.fillStyle = color
+      ctx.fillRect(2, y, barWidth, h)
+    }
   }
-  
-  ctx.globalAlpha = 1
-}
-
-function drawDetailed(ctx, width, height, rowHeight) {
-  props.visibleNodes.forEach((node, index) => {
-    const y = index * rowHeight
-    const h = Math.max(rowHeight, 1)
-    
-    const depth = node.depth || 0
-    const { color, alpha } = getIndigoForDepth(depth)
-    
-    ctx.fillStyle = color
-    ctx.globalAlpha = alpha
-    ctx.fillRect(2, y, width - 4, h)
-  })
-  
-  ctx.globalAlpha = 1
 }
 
 function handleClick(e) {
@@ -301,15 +257,15 @@ function stopDrag() {
   document.removeEventListener('mouseup', stopDrag)
 }
 
-watch(() => props.visibleNodes, () => {
+watch(() => props.memoryIndex, () => {
   scheduleDrawMinimap()
 }, { deep: true })
 
-watch(() => props.totalHeight, () => {
+watch(() => props.content, () => {
   scheduleDrawMinimap()
 })
 
-watch(() => props.totalNodes, () => {
+watch(() => props.totalHeight, () => {
   scheduleDrawMinimap()
 })
 
@@ -349,17 +305,19 @@ onUnmounted(() => {
 
 <style scoped>
 .minimap-wrapper {
-  width: 60px;  /* 宽度 60px */
+  width: 60px;
   flex-shrink: 0;
-  height: 100%;
-  margin-left: 12px;  /* 用留白分隔，不用边框 */
+  align-self: stretch;
+  margin-left: 12px;
+  display: flex;
+  flex-direction: column;
 }
 
 .minimap {
   width: 100%;
-  height: 100%;
-  background: var(--minimap-bg);  /* 与主内容区一致 */
-  border: none;  /* 去掉边框 */
+  flex: 1;
+  background: #ffffff;
+  border: none;
   position: relative;
   cursor: pointer;
   overflow: hidden;
@@ -372,7 +330,6 @@ onUnmounted(() => {
   left: 0;
   right: 0;
   bottom: 0;
-  height: 100%;
 }
 
 .minimap-canvas {
@@ -384,8 +341,8 @@ onUnmounted(() => {
   position: absolute;
   left: 0;
   right: 0;
-  background: var(--minimap-slider);  /* 40% 透明靛蓝 */
-  border: 1px solid var(--minimap-slider-border);  /* 1px 边框 */
+  background: rgba(99, 102, 241, 0.4);
+  border: 1px solid rgba(99, 102, 241, 0.3);
   border-radius: 2px;
   cursor: ns-resize;
   z-index: 100;
@@ -395,6 +352,6 @@ onUnmounted(() => {
 
 .minimap-slider:hover,
 .minimap-slider.dragging {
-  background: rgba(99, 102, 241, 0.5);  /* 加深到 50% */
+  background: rgba(99, 102, 241, 0.5);
 }
 </style>
