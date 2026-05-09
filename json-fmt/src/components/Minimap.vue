@@ -171,11 +171,11 @@ function drawLoading(ctx, width, height) {
   })
 }
 
-// 根据深度获取靛蓝色（透明度变化）
+// 根据深度获取靛蓝色（透明度变化）- 边缘纹理效果
 // 使用固定的靛蓝颜色值，因为 Canvas 不支持 CSS 变量
-const INDIGO_DEEP = 'rgba(99, 102, 241, 0.6)'
-const INDIGO_MEDIUM = 'rgba(99, 102, 241, 0.35)'
-const INDIGO_LIGHT = 'rgba(99, 102, 241, 0.15)'
+const INDIGO_DEEP = 'rgba(99, 102, 241, 0.15)'    /* 对象/数组 */
+const INDIGO_MEDIUM = 'rgba(99, 102, 241, 0.08)'  /* 字符串/数字 */
+const INDIGO_LIGHT = 'rgba(99, 102, 241, 0.04)'   /* 空行/空白 */
 
 function getIndigoForDepth(depth, maxDepth = 8) {
   const normalizedDepth = Math.min(depth / maxDepth, 1)
@@ -349,16 +349,17 @@ onUnmounted(() => {
 
 <style scoped>
 .minimap-wrapper {
-  width: 60px;  /* 从 80px 缩到 60px */
+  width: 60px;  /* 宽度 60px */
   flex-shrink: 0;
   height: 100%;
+  margin-left: 12px;  /* 用留白分隔，不用边框 */
 }
 
 .minimap {
   width: 100%;
   height: 100%;
-  background: var(--minimap-bg);
-  border-left: 1px solid var(--border-light);
+  background: var(--minimap-bg);  /* 与主内容区一致 */
+  border: none;  /* 去掉边框 */
   position: relative;
   cursor: pointer;
   overflow: hidden;
@@ -383,7 +384,8 @@ onUnmounted(() => {
   position: absolute;
   left: 0;
   right: 0;
-  background: var(--minimap-slider);  /* 透明度变化，无边框 */
+  background: var(--minimap-slider);  /* 40% 透明靛蓝 */
+  border: 1px solid var(--minimap-slider-border);  /* 1px 边框 */
   border-radius: 2px;
   cursor: ns-resize;
   z-index: 100;
@@ -393,6 +395,6 @@ onUnmounted(() => {
 
 .minimap-slider:hover,
 .minimap-slider.dragging {
-  background: var(--minimap-slider-active);  /* 加深透明度 */
+  background: rgba(99, 102, 241, 0.5);  /* 加深到 50% */
 }
 </style>

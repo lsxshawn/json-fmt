@@ -783,7 +783,7 @@ defineExpose({
 }
 
 .colon {
-  color: var(--text-secondary);
+  color: var(--json-bracket);  /* 极淡灰，融入背景 */
   margin-right: 4px;
 }
 
