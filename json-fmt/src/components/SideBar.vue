@@ -102,11 +102,11 @@ function openFileClick() {
 
 <style scoped>
 .sidebar {
-  width: var(--sidebar-width);
-  background: var(--bg-secondary);
-  border-right: 1px solid var(--border);
+  width: 240px;
   display: flex;
   flex-direction: column;
+  background: var(--bg-elevated);
+  border-right: 1px solid var(--border-light);
   flex-shrink: 0;
 }
 
@@ -116,7 +116,6 @@ function openFileClick() {
   align-items: center;
   justify-content: space-between;
   padding: 0 12px;
-  border-bottom: 1px solid var(--border);
 }
 
 .header-left {
@@ -129,32 +128,32 @@ function openFileClick() {
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.8px;
-  color: var(--text-secondary);
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary);
 }
 
 .file-count {
   font-size: 10px;
   padding: 1px 5px;
-  background: var(--border);
+  background: var(--border-light);
   border-radius: 8px;
   color: var(--text-secondary);
   font-weight: 500;
 }
 
 .sidebar-action {
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   display: flex;
   align-items: center;
   justify-content: center;
   border: none;
   background: transparent;
-  color: var(--text-secondary);
-  border-radius: 4px;
+  color: var(--text-tertiary);
+  border-radius: var(--radius-md);
   cursor: pointer;
   opacity: 0;
-  transition: opacity 150ms;
+  transition: all var(--transition-fast);
 }
 
 .sidebar-header:hover .sidebar-action {
@@ -162,8 +161,8 @@ function openFileClick() {
 }
 
 .sidebar-action:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
+  background: var(--bg-sunken);
+  color: var(--text-secondary);
 }
 
 .sidebar-content {
@@ -181,7 +180,7 @@ function openFileClick() {
 }
 
 .empty-icon {
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
   margin-bottom: 16px;
   opacity: 0.5;
 }
@@ -205,23 +204,22 @@ function openFileClick() {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px;
-  border-radius: 4px;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   font-size: 13px;
+  color: var(--text-secondary);
+  transition: all 100ms;
 }
 
 .file-item:hover {
-  background: var(--bg-hover);
-}
-
-.file-item:hover .file-close {
-  opacity: 1;
+  background: var(--accent-subtle);
+  color: var(--text-primary);
 }
 
 .file-item.active {
-  background: var(--bg-active);
-  border-left: 2px solid var(--accent);
+  background: var(--accent-light);
+  color: var(--accent);
 }
 
 .file-icon {
@@ -234,12 +232,11 @@ function openFileClick() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-primary);
 }
 
 .file-size {
   font-size: 11px;
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
   flex-shrink: 0;
   margin-right: 4px;
 }
@@ -252,21 +249,25 @@ function openFileClick() {
   justify-content: center;
   border: none;
   background: transparent;
-  color: var(--text-secondary);
-  border-radius: 3px;
+  color: var(--text-tertiary);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   opacity: 0;
-  transition: all 150ms;
+  transition: all var(--transition-fast);
+}
+
+.file-item:hover .file-close {
+  opacity: 1;
 }
 
 .file-close:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
+  background: var(--bg-sunken);
+  color: var(--text-secondary);
 }
 
 .sidebar-footer {
-  padding: 8px;
-  border-top: 1px solid var(--border);
+  padding: 12px;
+  border-top: 1px solid var(--border-light);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -280,18 +281,18 @@ function openFileClick() {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 6px 12px;
+  padding: 8px 12px;
   border: none;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 12px;
-  border-radius: 4px;
+  font-size: 13px;
+  border-radius: var(--radius-md);
   cursor: pointer;
-  transition: all 150ms;
+  transition: all var(--transition-fast);
 }
 
 .footer-btn:hover {
-  background: var(--bg-hover);
+  background: var(--bg-sunken);
   color: var(--text-primary);
 }
 

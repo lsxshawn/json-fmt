@@ -30,17 +30,20 @@ export class BlockCacheManager {
     this.recyclingQueue = [];
     this.loadingPromises.clear();
     
-    // 解析完整数据（只做一次）
-    if (!this.parsedData) {
-      try {
-        let cleanContent = content;
-        if (cleanContent.charCodeAt(0) === 0xFEFF) {
-          cleanContent = cleanContent.substring(1);
-        }
-        this.parsedData = JSON.parse(cleanContent);
-      } catch (e) {
-        console.error('Failed to parse JSON:', e);
+    // 解析完整数据
+    try {
+      let cleanContent = content;
+      if (cleanContent.charCodeAt(0) === 0xFEFF) {
+        cleanContent = cleanContent.substring(1);
       }
+      this.parsedData = JSON.parse(cleanContent);
+      
+      // 立即构建完整的 flatNodesCache
+      console.log('[BlockCacheManager] initialize: building flatNodesCache, totalNodes:', totalNodes);
+      this._buildFlatNodesCache();
+      console.log('[BlockCacheManager] initialize: flatNodesCache built, length:', this.flatNodesCache.length);
+    } catch (e) {
+      console.error('Failed to parse JSON:', e);
     }
   }
   
@@ -62,8 +65,12 @@ export class BlockCacheManager {
     const promises = [];
     let needsUpdate = false;
     
+    console.log('[BlockCacheManager] loadBlocks: rangeStart:', rangeStart, 'rangeEnd:', rangeEnd, 
+                'activeBlocks.size:', this.activeBlocks.size);
+    
     for (let blockId = rangeStart; blockId <= rangeEnd; blockId++) {
       if (!this.activeBlocks.has(blockId) && !this.loadingPromises.has(blockId)) {
+        console.log('[BlockCacheManager] loadBlocks: loading block', blockId);
         promises.push(this.loadBlock(blockId));
         needsUpdate = true;
       } else if (this.activeBlocks.has(blockId)) {
@@ -72,11 +79,14 @@ export class BlockCacheManager {
         if (block) {
           block.lastAccessTime = Date.now();
         }
+        console.log('[BlockCacheManager] loadBlocks: block', blockId, 'already loaded, status:', block?.status);
       }
     }
     
     if (promises.length > 0) {
+      console.log('[BlockCacheManager] loadBlocks: waiting for', promises.length, 'blocks to load');
       await Promise.all(promises);
+      console.log('[BlockCacheManager] loadBlocks: all blocks loaded');
     }
     
     this.recycleBlocks(rangeStart, rangeEnd);
@@ -84,7 +94,9 @@ export class BlockCacheManager {
     // 无论是否有新blocks加载，都触发更新
     // 因为滚动位置变了，需要重新渲染可见区域
     if (this.onBlocksChanged) {
-      this.onBlocksChanged(this.getActiveNodes());
+      const activeNodes = this.getActiveNodes();
+      console.log('[BlockCacheManager] loadBlocks: calling onBlocksChanged with', activeNodes.length, 'nodes');
+      this.onBlocksChanged(activeNodes);
     }
   }
   
@@ -111,6 +123,9 @@ export class BlockCacheManager {
   _loadBlockSync(blockId, resolve) {
     const range = this.getBlockRange(blockId);
     
+    console.log('[BlockCacheManager] _loadBlockSync: blockId:', blockId, 
+                'range:', range, 'memoryIndex:', !!this.memoryIndex, 'content:', !!this.content);
+    
     const block = {
       id: blockId,
       startIndex: range.start,
@@ -123,7 +138,9 @@ export class BlockCacheManager {
     this.activeBlocks.set(blockId, block);
     
     try {
+      console.log('[BlockCacheManager] _loadBlockSync: calling _parseBlock with start:', range.start, 'end:', range.end);
       const nodes = this._parseBlock(range.start, range.end);
+      console.log('[BlockCacheManager] _loadBlockSync: _parseBlock returned', nodes.length, 'nodes');
       block.nodes = nodes;
       block.status = 'loaded';
       block.lastAccessTime = Date.now();
@@ -138,26 +155,39 @@ export class BlockCacheManager {
   _parseBlock(startIndex, endIndex) {
     const nodes = [];
     
-    // 如果已经有缓存的flatNodes，直接切片获取
-    if (this.flatNodesCache.length >= this.totalNodes) {
-      return this.flatNodesCache.slice(startIndex, endIndex + 1);
-    }
+    console.log('[BlockCacheManager] _parseBlock: startIndex:', startIndex, 'endIndex:', endIndex, 
+                'flatNodesCache.length:', this.flatNodesCache.length, 'totalNodes:', this.totalNodes);
     
     // 如果没有解析数据，返回空数组
     if (!this.parsedData) {
+      console.log('[BlockCacheManager] _parseBlock: parsedData is null');
       return nodes;
     }
     
-    // 生成flatNodes缓存
-    if (this.flatNodesCache.length === 0) {
+    // 如果缓存不完整或请求的范围超出缓存范围，需要构建完整缓存
+    if (this.flatNodesCache.length < this.totalNodes || endIndex >= this.flatNodesCache.length) {
+      console.log('[BlockCacheManager] _parseBlock: building flatNodesCache');
       this._buildFlatNodesCache();
+      console.log('[BlockCacheManager] _parseBlock: flatNodesCache built, length:', this.flatNodesCache.length);
     }
     
-    return this.flatNodesCache.slice(startIndex, Math.min(endIndex + 1, this.flatNodesCache.length));
+    // 如果已经有完整缓存的flatNodes，直接切片获取
+    if (this.flatNodesCache.length > 0) {
+      const result = this.flatNodesCache.slice(startIndex, Math.min(endIndex + 1, this.flatNodesCache.length));
+      console.log('[BlockCacheManager] _parseBlock: returning', result.length, 'nodes');
+      return result;
+    }
+    
+    return nodes;
   }
   
   _buildFlatNodesCache() {
-    if (!this.parsedData) return;
+    if (!this.parsedData) {
+      console.log('[BlockCacheManager] _buildFlatNodesCache: parsedData is null');
+      return;
+    }
+    
+    console.log('[BlockCacheManager] _buildFlatNodesCache: starting, totalNodes:', this.totalNodes);
     
     const data = this.parsedData;
     let idCounter = 0;
@@ -195,6 +225,7 @@ export class BlockCacheManager {
     }
     
     this.flatNodesCache = flatNodes;
+    console.log('[BlockCacheManager] _buildFlatNodesCache: finished, flatNodesCache.length:', this.flatNodesCache.length);
   }
   
   _createNode(value, key, depth, id, isRoot = false) {

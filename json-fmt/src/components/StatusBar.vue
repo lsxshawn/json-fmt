@@ -1,6 +1,5 @@
 <script setup>
-import FileIcon from './icons/FileIcon.vue';
-import ListTreeIcon from './icons/ListTreeIcon.vue';
+import { computed } from 'vue';
 import { formatSize, formatNumber, formatTime } from '@/composables/useFormat';
 
 const props = defineProps({
@@ -23,10 +22,26 @@ const props = defineProps({
   parseStatus: {
     type: String,
     default: ''
+  },
+  isConsoleOpen: {
+    type: Boolean,
+    default: false
   }
 });
 
 const emit = defineEmits(['toggle-console']);
+
+const statusText = computed(() => {
+  if (props.isParsing) return '解析中';
+  if (props.parseStatus === 'error') return '错误';
+  return '就绪';
+});
+
+const statusClass = computed(() => {
+  if (props.isParsing) return 'parsing';
+  if (props.parseStatus === 'error') return 'error';
+  return 'ready';
+});
 </script>
 
 <template>
@@ -35,39 +50,53 @@ const emit = defineEmits(['toggle-console']);
       <span class="status-item" v-if="fileSize">
         {{ formatSize(fileSize) }}
       </span>
-      <span class="status-divider" v-if="fileSize && (totalNodes || parseTime)">|</span>
+      <span class="status-separator" v-if="fileSize && (totalNodes || parseTime)">|</span>
       <span class="status-item" v-if="totalNodes">
         {{ formatNumber(totalNodes) }} 节点
       </span>
-      <span class="status-divider" v-if="totalNodes && parseTime">|</span>
+      <span class="status-separator" v-if="totalNodes && parseTime">|</span>
       <span class="status-item" v-if="parseTime">
         {{ formatTime(parseTime) }}
       </span>
-      
     </div>
+    
+    <div class="status-center"></div>
+    
     <div class="status-right">
-      <button class="console-toggle" @click="emit('toggle-console')" title="切换控制台">
-        <span class="console-text">就绪</span>
-        <span class="chevron-icon">▼</span>
+      <button 
+        class="status-toggle" 
+        @click="emit('toggle-console')"
+        :class="{ active: isConsoleOpen }"
+      >
+        <span class="status-dot" :class="statusClass"></span>
+        <span class="status-label">{{ statusText }}</span>
+        <svg 
+          class="chevron-icon" 
+          :class="{ expanded: isConsoleOpen }"
+          width="12" 
+          height="12" 
+          viewBox="0 0 24 24" 
+          fill="none" 
+          stroke="currentColor" 
+          stroke-width="2"
+        >
+          <path d="M6 9l6 6 6-6"/>
+        </svg>
       </button>
-      <span class="status-badge local">
-        <span class="dot"></span>
-        本地处理
-      </span>
     </div>
   </div>
 </template>
 
 <style scoped>
 .status-bar {
-  height: 24px;
-  background: #f1f3f4;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 12px;
+  padding: 0 16px;
+  background: var(--bg-base);
+  border-top: 1px solid var(--border-light);
   font-size: 12px;
-  color: #5f6368;
   flex-shrink: 0;
 }
 
@@ -81,76 +110,76 @@ const emit = defineEmits(['toggle-console']);
   display: flex;
   align-items: center;
   gap: 4px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
 }
 
-.status-divider {
-  color: var(--border);
+.status-separator {
+  color: var(--border-medium);
+}
+
+.status-center {
+  flex: 1;
 }
 
 .status-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
 }
 
-.status-badge {
+.status-toggle {
   display: flex;
   align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--success);
+  gap: 6px;
+  padding: 4px 10px;
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--transition-fast);
 }
 
-.dot {
+.status-toggle:hover {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+
+.status-label {
+  font-weight: 500;
+}
+
+.status-dot {
   width: 6px;
   height: 6px;
-  background: var(--success);
   border-radius: 50%;
+}
+
+.status-dot.ready {
+  background: var(--success);
+}
+
+.status-dot.parsing {
+  background: var(--warning);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.status-dot.error {
+  background: var(--error);
 }
 
 .chevron-icon {
-  font-size: 10px;
-  color: #5f6368;
-  margin-left: 4px;
+  transition: transform 200ms ease;
 }
 
-.loading-spinner {
-  width: 10px;
-  height: 10px;
-  border: 1px solid var(--accent);
-  border-top-color: transparent;
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
+.chevron-icon.expanded {
+  transform: rotate(180deg);
 }
 
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-.status-item.parsing {
-  color: var(--accent);
-}
-
-.console-toggle {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  background: transparent;
-  border: none;
-  border-radius: 4px;
-  color: var(--text-secondary);
-  font-size: 11px;
-  cursor: pointer;
-  transition: background 150ms;
-}
-
-.console-toggle:hover {
-  background: var(--bg-hover);
-}
-
-.console-text {
-  margin-right: 2px;
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 </style>

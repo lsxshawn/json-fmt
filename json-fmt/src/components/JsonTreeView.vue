@@ -5,6 +5,7 @@ import FolderIcon from './icons/FolderIcon.vue';
 import JsonIcon from './icons/JsonIcon.vue';
 import SearchIcon from './icons/SearchIcon.vue';
 import CloseIcon from './icons/CloseIcon.vue';
+import TriangleIcon from './icons/TriangleIcon.vue';
 
 const props = defineProps({
   visibleNodes: {
@@ -46,6 +47,10 @@ const props = defineProps({
   currentFileText: {
     type: String,
     default: ''
+  },
+  onNeedNodes: {
+    type: Function,
+    default: null
   }
 });
 
@@ -69,8 +74,6 @@ const BUFFER_SIZE = 10;
 const highlightedNodeId = ref(null);
 const searchInputRef = ref(null);
 
-let needNodesTimeout = null;
-
 function updateContainerHeight() {
   if (containerRef.value) {
     containerHeight.value = containerRef.value.clientHeight;
@@ -90,7 +93,6 @@ function handleMinimapJump(scrollTop) {
   const clampedScrollTop = Math.max(0, Math.min(scrollTop, maxScroll));
   containerRef.value.scrollTop = clampedScrollTop;
   
-  // 手动触发节点加载（因为直接设置scrollTop不会触发scroll事件）
   if (props.onNeedNodes) {
     const itemCount = props.totalNodes > 0 ? props.totalNodes : props.visibleNodes.length;
     const visibleCount = Math.ceil(containerHeight.value / ITEM_HEIGHT) + BUFFER_SIZE * 2;
@@ -115,8 +117,6 @@ function handleSearchKeydown(e) {
     }
   }
 }
-
-
 
 const matchCount = computed(() => {
   if (!props.searchQuery.trim()) return 0;
@@ -143,18 +143,7 @@ const visibleRange = computed(() => {
 
 const visibleItems = computed(() => {
   const { start, end } = visibleRange.value;
-  // 根据节点的全局ID过滤可见区域的节点
   const items = props.visibleNodes.filter(node => node && node.id >= start && node.id < end);
-  
-  // Debug: 输出可见范围信息
-  if (props.visibleNodes.length > 0) {
-    console.log('[JsonTreeView] visibleRange:', { start, end }, 
-                'visibleNodes count:', props.visibleNodes.length,
-                'visibleItems count:', items.length,
-                'first node id:', props.visibleNodes[0]?.id,
-                'last node id:', props.visibleNodes[props.visibleNodes.length - 1]?.id);
-  }
-  
   return items;
 });
 
@@ -234,15 +223,9 @@ function handleScroll(e) {
   const maxScroll = Math.max(0, totalHeight.value - containerHeight.value);
   const newScrollTop = Math.max(0, Math.min(e.target.scrollTop, maxScroll));
   
-  console.log('[handleScroll] e.target.scrollTop:', e.target.scrollTop, 
-              'newScrollTop:', newScrollTop, 
-              'totalHeight:', totalHeight.value,
-              'containerHeight:', containerHeight.value);
-  
   scrollTop.value = newScrollTop;
   emit('scroll', scrollTop.value);
   
-  // 同步触发节点加载
   if (props.onNeedNodes) {
     const itemCount = props.totalNodes > 0 ? props.totalNodes : props.visibleNodes.length;
     const visibleCount = Math.ceil(containerHeight.value / ITEM_HEIGHT) + BUFFER_SIZE * 2;
@@ -284,9 +267,6 @@ function handleKeydown(e) {
     searchInputRef.value?.focus();
   }
 }
-
-watch(() => props.visibleNodes, () => {
-}, { deep: true });
 
 onMounted(() => {
   updateContainerHeight();
@@ -372,7 +352,6 @@ defineExpose({
       </div>
 
       <div class="tree-container" v-else>
-        <!-- VS Code style layout: gutter (line numbers) + content + minimap -->
         <div
           ref="containerRef"
           class="tree-scroll"
@@ -389,75 +368,67 @@ defineExpose({
                   'is-root': node.isRoot
                 }"
               >
-                <!-- VS Code style gutter with line numbers -->
                 <span class="line-gutter">
                   <span class="line-number">{{ node.id + 1 }}</span>
                 </span>
                 
-                <!-- Content area with indentation -->
                 <span class="node-content" :style="{ paddingLeft: (node.depth * 12) + 'px' }">
                   <span
                     v-if="node.type === 'object' || node.type === 'array'"
                     class="toggle-btn"
+                    :class="{ expanded: !node.collapsed }"
                     @click.stop="emit('toggleNode', node.id)"
                   >
-                    {{ node.collapsed ? '›' : '⌄' }}
+                    <TriangleIcon :size="10" />
                   </span>
                   <span v-else class="toggle-placeholder"></span>
 
-                  <span
-                    v-if="!node.isRoot"
-                    class="node-key"
-                  >
-                  <template v-if="highlightMatch(node.key)?.isMatch">
-                    {{ highlightMatch(node.key).before }}<mark class="search-match">{{ highlightMatch(node.key).match }}</mark>{{ highlightMatch(node.key).after }}
-                  </template>
-                  <template v-else>{{ node.key }}</template>
-                </span>
-                <span
-                  v-if="!node.isRoot && node.type !== 'object' && node.type !== 'array'"
-                  class="colon">:</span>
+                  <span v-if="!node.isRoot" class="node-key">
+                    <template v-if="highlightMatch(node.key)?.isMatch">
+                      {{ highlightMatch(node.key).before }}<mark class="search-match">{{ highlightMatch(node.key).match }}</mark>{{ highlightMatch(node.key).after }}
+                    </template>
+                    <template v-else>{{ node.key }}</template>
+                  </span>
+                  <span v-if="!node.isRoot && node.type !== 'object' && node.type !== 'array'" class="colon">:</span>
 
-                <template v-if="node.type === 'string'">
-                  <span class="node-value string-value" :title="node.fullValue">
-                    <template v-if="highlightMatch(node.displayValue)?.isMatch">
-                      "{{ highlightMatch(node.displayValue).before }}<mark class="search-match">{{ highlightMatch(node.displayValue).match }}</mark>{{ highlightMatch(node.displayValue).after }}"
-                    </template>
-                    <template v-else>"{{ node.displayValue }}"</template>
-                  </span>
-                </template>
-                <template v-else-if="node.type === 'number'">
-                  <span class="node-value number-value">
-                    <template v-if="highlightMatch(node.displayValue)?.isMatch">
-                      {{ highlightMatch(node.displayValue).before }}<mark class="search-match">{{ highlightMatch(node.displayValue).match }}</mark>{{ highlightMatch(node.displayValue).after }}
-                    </template>
-                    <template v-else>{{ node.displayValue }}</template>
-                  </span>
-                </template>
-                <template v-else-if="node.type === 'boolean'">
-                  <span class="node-value boolean-value">{{ node.displayValue }}</span>
-                </template>
-                <template v-else-if="node.type === 'null'">
-                  <span class="node-value null-value">{{ node.displayValue }}</span>
-                </template>
-                <template v-else-if="node.type === 'array'">
-                  <span class="bracket">[</span>
-                  <span class="node-count">{{ node.collapsed ? node.childCount : '' }}</span>
-                  <span class="bracket">]</span>
-                </template>
-                <template v-else-if="node.type === 'object'">
-                  <span class="bracket">{</span>
-                  <span class="node-count">{{ node.collapsed ? node.childCount : '' }}</span>
-                  <span class="bracket">}</span>
-                </template>
-                  </span> <!-- Close node-content -->
+                  <template v-if="node.type === 'string'">
+                    <span class="node-value string-value" :title="node.fullValue">
+                      <template v-if="highlightMatch(node.displayValue)?.isMatch">
+                        "{{ highlightMatch(node.displayValue).before }}<mark class="search-match">{{ highlightMatch(node.displayValue).match }}</mark>{{ highlightMatch(node.displayValue).after }}"
+                      </template>
+                      <template v-else>"{{ node.displayValue }}"</template>
+                    </span>
+                  </template>
+                  <template v-else-if="node.type === 'number'">
+                    <span class="node-value number-value">
+                      <template v-if="highlightMatch(node.displayValue)?.isMatch">
+                        {{ highlightMatch(node.displayValue).before }}<mark class="search-match">{{ highlightMatch(node.displayValue).match }}</mark>{{ highlightMatch(node.displayValue).after }}
+                      </template>
+                      <template v-else>{{ node.displayValue }}</template>
+                    </span>
+                  </template>
+                  <template v-else-if="node.type === 'boolean'">
+                    <span class="node-value boolean-value">{{ node.displayValue }}</span>
+                  </template>
+                  <template v-else-if="node.type === 'null'">
+                    <span class="node-value null-value">{{ node.displayValue }}</span>
+                  </template>
+                  <template v-else-if="node.type === 'array'">
+                    <span class="bracket">[</span>
+                    <span class="node-count">{{ node.collapsed ? node.childCount : '' }}</span>
+                    <span class="bracket">]</span>
+                  </template>
+                  <template v-else-if="node.type === 'object'">
+                    <span class="bracket">{</span>
+                    <span class="node-count">{{ node.collapsed ? node.childCount : '' }}</span>
+                    <span class="bracket">}</span>
+                  </template>
+                </span>
               </div>
             </div>
           </div>
         </div>
-        <!-- ============================================ -->
-        <!-- 重要：只有在有数据或正在解析时才显示Minimap -->
-        <!-- ============================================ -->
+        
         <Minimap
           v-if="visibleNodes.length > 0 || parseStatus === 'parsing'"
           :visibleNodes="visibleNodes"
@@ -480,7 +451,7 @@ defineExpose({
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: var(--bg-primary);
+  background: var(--bg-base);
   overflow: hidden;
 }
 
@@ -488,17 +459,13 @@ defineExpose({
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 12px;
-  height: 36px;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  margin: 8px 12px;
+  padding: 0 16px;
+  height: 44px;
+  border-bottom: 1px solid var(--border-light);
 }
 
 .search-box:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-light);
+  border-bottom-color: var(--accent);
 }
 
 .search-icon {
@@ -510,7 +477,7 @@ defineExpose({
   flex: 1;
   border: none;
   background: transparent;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text-primary);
   outline: none;
 }
@@ -522,20 +489,20 @@ defineExpose({
 .search-shortcut {
   font-size: 11px;
   padding: 2px 6px;
-  background: var(--bg-hover);
-  border-radius: 4px;
-  color: var(--text-secondary);
-  font-family: monospace;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
 }
 
 .search-counter {
   font-size: 11px;
   padding: 2px 6px;
   background: var(--accent);
-  color: white;
-  border-radius: 4px;
-  font-family: monospace;
-  margin-right: 4px;
+  color: var(--text-inverse);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
 }
 
 .search-btn {
@@ -547,13 +514,12 @@ defineExpose({
   border: none;
   background: transparent;
   color: var(--text-secondary);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  margin-right: 2px;
 }
 
 .search-btn:hover {
-  background: var(--bg-hover);
+  background: var(--bg-elevated);
   color: var(--text-primary);
 }
 
@@ -566,19 +532,13 @@ defineExpose({
   border: none;
   background: transparent;
   color: var(--text-secondary);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 
 .search-clear:hover {
-  background: var(--bg-hover);
+  background: var(--bg-elevated);
   color: var(--text-primary);
-}
-
-.search-count {
-  font-size: 11px;
-  color: var(--text-secondary);
-  font-family: var(--font-code);
 }
 
 .tree-content {
@@ -600,7 +560,7 @@ defineExpose({
 .empty-decoration {
   position: absolute;
   inset: 0;
-  opacity: 0.015;
+  opacity: 0.03;
 }
 
 .grid-pattern {
@@ -626,8 +586,8 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-hover);
-  border-radius: 16px;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-lg);
   margin-bottom: 24px;
   color: var(--accent);
 }
@@ -657,17 +617,36 @@ defineExpose({
   gap: 8px;
   padding: 8px 16px;
   background: var(--accent);
-  color: var(--bg-primary);
+  color: var(--text-inverse);
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   font-size: 14px;
+  font-weight: 500;
   cursor: pointer;
-  transition: all 150ms;
+  transition: all var(--transition-fast);
 }
 
 .btn-primary:hover {
-  opacity: 0.9;
-  transform: translateY(-1px);
+  background: var(--accent-hover);
+}
+
+.btn-secondary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-secondary:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
 }
 
 .empty-shortcuts {
@@ -677,35 +656,11 @@ defineExpose({
 
 .shortcut {
   padding: 2px 6px;
-  background: var(--bg-hover);
-  border-radius: 3px;
-  font-family: monospace;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text-tertiary);
-}
-
-.btn-secondary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  background: transparent;
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 14px;
-  cursor: pointer;
-  transition: all 150ms;
-}
-
-.btn-secondary:hover {
-  background: var(--bg-hover);
-  border-color: var(--text-secondary);
-}
-
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
 }
 
 .error-state {
@@ -724,15 +679,15 @@ defineExpose({
 }
 
 .error-message {
-  background: var(--bg-secondary);
+  background: var(--bg-elevated);
   padding: 16px;
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   font-size: 12px;
   white-space: pre-wrap;
   color: var(--text-secondary);
   max-height: 300px;
   overflow-y: auto;
-  font-family: var(--font-code);
+  font-family: var(--font-mono);
 }
 
 .tree-container {
@@ -748,8 +703,6 @@ defineExpose({
   overflow-x: auto;
 }
 
-
-
 .tree-content-inner {
   position: relative;
   min-width: max-content;
@@ -764,34 +717,20 @@ defineExpose({
 .tree-node {
   display: flex;
   align-items: stretch;
-  height: 22px;
+  height: 28px;
   font-size: 13px;
-  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Fira Mono', 'Roboto Mono', 'Consolas', monospace;
+  font-family: var(--font-mono);
   cursor: pointer;
   border-left: 2px solid transparent;
 }
 
 .tree-node:hover {
-  background: rgba(140, 140, 140, 0.1);
+  background: var(--bg-elevated);
 }
 
 .tree-node.is-highlighted {
-  background: rgba(0, 122, 204, 0.15);
-  border-left-color: #007acc;
-}
-
-.tree-node.active,
-.tree-node:focus {
-  background: var(--bg-active);
-  outline: none;
-}
-
-.tree-node.is-highlighted {
-  background: var(--bg-active);
-}
-
-.tree-node.is-root {
-  font-weight: 500;
+  background: var(--accent-subtle);
+  border-left-color: var(--accent);
 }
 
 .line-gutter {
@@ -799,17 +738,17 @@ defineExpose({
   align-items: center;
   justify-content: flex-end;
   width: 56px;
-  padding: 0 16px 0 8px;
+  padding: 0 12px 0 8px;
   background: transparent;
-  border-right: 1px solid #3b3b3b;
+  border-right: 1px solid var(--border-light);
   flex-shrink: 0;
   user-select: none;
 }
 
 .line-number {
-  color: #8b949e;
+  color: var(--text-tertiary);
   font-size: 12px;
-  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Fira Mono', 'Roboto Mono', 'Consolas', monospace;
+  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
@@ -823,59 +762,59 @@ defineExpose({
 }
 
 .search-match {
-  background: #fef08a;
-  color: #000;
+  background: var(--warning-light);
+  color: var(--text-primary);
   border-radius: 2px;
   padding: 0 2px;
 }
 
 .toggle-btn {
-  width: 12px;
-  font-size: 10px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  flex-shrink: 0;
-  margin-right: 4px;
-  position: relative;
-  z-index: 1;
-  transition: color var(--transition-fast);
+  width: 16px;
+  height: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  margin-right: 4px;
+  transition: all var(--transition-fast);
 }
 
 .toggle-btn:hover {
-  color: var(--text);
+  background: var(--border-light);
+  color: var(--text-secondary);
+}
+
+.toggle-btn :deep(svg) {
+  transition: transform 150ms ease;
+}
+
+.toggle-btn.expanded :deep(svg) {
+  transform: rotate(90deg);
 }
 
 .toggle-placeholder {
-  width: 12px;
+  width: 16px;
   flex-shrink: 0;
   margin-right: 4px;
-  position: relative;
-  z-index: 1;
 }
 
 .node-key {
   color: var(--json-key);
   margin-right: 4px;
-  position: relative;
-  z-index: 1;
 }
 
 .colon {
   color: var(--text-secondary);
   margin-right: 4px;
-  position: relative;
-  z-index: 1;
 }
 
 .node-value {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 500px;
-  position: relative;
-  z-index: 1;
 }
 
 .string-value {
@@ -897,15 +836,11 @@ defineExpose({
 
 .bracket {
   color: var(--json-bracket);
-  position: relative;
-  z-index: 1;
 }
 
 .node-count {
   color: var(--text-secondary);
   font-size: 11px;
   margin: 0 4px;
-  position: relative;
-  z-index: 1;
 }
 </style>
