@@ -1,6 +1,5 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
-import Minimap from './Minimap.vue';
 import FolderIcon from './icons/FolderIcon.vue';
 import JsonIcon from './icons/JsonIcon.vue';
 import SearchIcon from './icons/SearchIcon.vue';
@@ -51,6 +50,10 @@ const props = defineProps({
   onNeedNodes: {
     type: Function,
     default: null
+  },
+  jumpToLine: {
+    type: Number,
+    default: -1
   }
 });
 
@@ -63,11 +66,12 @@ const emit = defineEmits([
   'search',
   'searchNext',
   'searchPrev',
-  'pasteContent'
+  'pasteContent',
+  'scrollData'
 ]);
 
 const containerRef = ref(null);
-const scrollTop = ref(0);
+const localScrollTop = ref(0);
 const containerHeight = ref(600);
 const ITEM_HEIGHT = 28;
 const BUFFER_SIZE = 10;
@@ -80,84 +84,49 @@ function updateContainerHeight() {
   }
 }
 
-const scrollProgress = computed(() => {
-  if (!containerRef.value) return 0;
-  const maxScroll = totalHeight.value - containerHeight.value;
-  if (maxScroll <= 0) return 0;
-  return (scrollTop.value / maxScroll) * 100;
-});
+const totalHeight = computed(() => props.totalNodes * ITEM_HEIGHT);
 
-function handleMinimapJump(scrollTop) {
-  if (!containerRef.value) return;
-  const maxScroll = totalHeight.value - containerHeight.value;
-  const clampedScrollTop = Math.max(0, Math.min(scrollTop, maxScroll));
-  containerRef.value.scrollTop = clampedScrollTop;
-  
-  if (props.onNeedNodes) {
-    const itemCount = props.totalNodes > 0 ? props.totalNodes : props.visibleNodes.length;
-    const visibleCount = Math.ceil(containerHeight.value / ITEM_HEIGHT) + BUFFER_SIZE * 2;
-    const maxStart = Math.max(0, itemCount - visibleCount);
-    const requestedStart = Math.floor(clampedScrollTop / ITEM_HEIGHT) - BUFFER_SIZE;
-    const start = Math.max(0, Math.min(requestedStart, maxStart));
-    const end = Math.min(itemCount, start + visibleCount);
-    
-    const bufferStart = Math.max(0, start - BUFFER_SIZE);
-    const bufferEnd = Math.min(itemCount, end + BUFFER_SIZE);
-    props.onNeedNodes(bufferStart, bufferEnd);
-  }
-}
+const scrollLine = computed(() => Math.floor(localScrollTop.value / ITEM_HEIGHT));
 
-function handleSearchKeydown(e) {
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    if (e.shiftKey) {
-      emit('searchPrev');
-    } else {
-      emit('searchNext');
-    }
-  }
-}
+const viewportItemCount = computed(() => Math.ceil(containerHeight.value / ITEM_HEIGHT));
 
-const matchCount = computed(() => {
-  if (!props.searchQuery.trim()) return 0;
-  const query = props.searchQuery.toLowerCase();
-  return props.visibleNodes.filter(node =>
-    node.key?.toLowerCase().includes(query) ||
-    node.displayValue?.toLowerCase().includes(query) ||
-    (node.fullValue?.toLowerCase() || '').includes(query)
-  ).length;
-});
+const startIndex = computed(() => Math.max(0, scrollLine.value - BUFFER_SIZE));
 
-const currentMatchIndex = ref(0);
-
-const visibleRange = computed(() => {
-  const itemCount = props.totalNodes > 0 ? props.totalNodes : props.visibleNodes.length;
-  const visibleCount = Math.ceil(containerHeight.value / ITEM_HEIGHT) + BUFFER_SIZE * 2;
-  const maxStart = Math.max(0, itemCount - visibleCount);
-  const requestedStart = Math.floor(scrollTop.value / ITEM_HEIGHT) - BUFFER_SIZE;
-  const start = Math.max(0, Math.min(requestedStart, maxStart));
-  const end = Math.min(itemCount, start + visibleCount);
-  
-  return { start, end };
-});
+const endIndex = computed(() => Math.min(props.totalNodes, scrollLine.value + viewportItemCount.value + BUFFER_SIZE));
 
 const visibleItems = computed(() => {
-  const { start, end } = visibleRange.value;
-  const items = props.visibleNodes.filter(node => node && node.id >= start && node.id < end);
-  return items;
+  const maxSafeEnd = Math.min(endIndex.value, props.visibleNodes.length);
+  const safeStart = Math.min(startIndex.value, maxSafeEnd);
+  return props.visibleNodes.slice(safeStart, maxSafeEnd);
 });
 
-const totalHeight = computed(() => {
-  const count = props.totalNodes > 0 ? props.totalNodes : props.visibleNodes.length;
-  if (count === 0) {
-    return containerHeight.value;
+const offsetY = computed(() => startIndex.value * ITEM_HEIGHT);
+
+watch(() => props.jumpToLine, (newLine) => {
+  if (newLine >= 0 && props.totalNodes > 0) {
+    localScrollTop.value = newLine * ITEM_HEIGHT;
+    if (containerRef.value) {
+      containerRef.value.scrollTop = localScrollTop.value;
+    }
   }
-  return count * ITEM_HEIGHT;
-});
+}, { immediate: false });
 
-const offsetY = computed(() => {
-  return visibleRange.value.start * ITEM_HEIGHT;
-});
+const prevTotalNodes = ref(-1);
+watch(() => props.totalNodes, (newVal) => {
+  if (newVal > 0 && prevTotalNodes.value !== newVal) {
+    prevTotalNodes.value = newVal;
+    localScrollTop.value = 0;
+    if (containerRef.value) {
+      containerRef.value.scrollTop = 0;
+    }
+  }
+}, { immediate: false });
+
+watch([startIndex, endIndex], () => {
+  if (props.onNeedNodes) {
+    props.onNeedNodes(Math.max(0, startIndex.value - 50), Math.min(props.totalNodes, endIndex.value + 50));
+  }
+}, { immediate: true });
 
 const currentMatchNodeId = computed(() => {
   if (!props.searchQuery.trim() || props.searchMatchCount === 0) {
@@ -175,36 +144,7 @@ const currentMatchNodeId = computed(() => {
   return null;
 });
 
-watch(() => props.currentFile, () => {
-  if (containerRef.value) {
-    containerRef.value.scrollTop = 0;
-    scrollTop.value = 0;
-  }
-});
 
-watch(() => props.searchMatchIndex, (newIndex) => {
-  if (newIndex > 0 && containerRef.value) {
-    const matchNodes = props.visibleNodes.filter(node => {
-      const q = props.searchQuery.toLowerCase();
-      return node.key?.toLowerCase().includes(q) ||
-        node.displayValue?.toLowerCase().includes(q) ||
-        (node.fullValue?.toLowerCase() || '').includes(q);
-    });
-    if (matchNodes.length > 0 && newIndex <= matchNodes.length) {
-      const targetNode = matchNodes[newIndex - 1];
-      const nodeIndex = props.visibleNodes.findIndex(n => n.id === targetNode.id);
-      if (nodeIndex !== -1) {
-        const nodeTop = nodeIndex * ITEM_HEIGHT;
-        const nodeBottom = nodeTop + ITEM_HEIGHT;
-        if (nodeTop < scrollTop.value) {
-          containerRef.value.scrollTop = nodeTop;
-        } else if (nodeBottom > scrollTop.value + containerHeight.value) {
-          containerRef.value.scrollTop = nodeBottom - containerHeight.value;
-        }
-      }
-    }
-  }
-});
 
 function highlightMatch(text) {
   if (!props.searchQuery.trim() || !text) return text;
@@ -220,24 +160,16 @@ function highlightMatch(text) {
 }
 
 function handleScroll(e) {
-  const maxScroll = Math.max(0, totalHeight.value - containerHeight.value);
-  const newScrollTop = Math.max(0, Math.min(e.target.scrollTop, maxScroll));
+  const localMaxScroll = Math.max(0, totalHeight.value - containerHeight.value);
+  const newLocalScrollTop = Math.max(0, Math.min(e.target.scrollTop, localMaxScroll));
   
-  scrollTop.value = newScrollTop;
-  emit('scroll', scrollTop.value);
-  
-  if (props.onNeedNodes) {
-    const itemCount = props.totalNodes > 0 ? props.totalNodes : props.visibleNodes.length;
-    const visibleCount = Math.ceil(containerHeight.value / ITEM_HEIGHT) + BUFFER_SIZE * 2;
-    const maxStart = Math.max(0, itemCount - visibleCount);
-    const requestedStart = Math.floor(scrollTop.value / ITEM_HEIGHT) - BUFFER_SIZE;
-    const start = Math.max(0, Math.min(requestedStart, maxStart));
-    const end = Math.min(itemCount, start + visibleCount);
-    
-    const bufferStart = Math.max(0, start - BUFFER_SIZE);
-    const bufferEnd = Math.min(itemCount, end + BUFFER_SIZE);
-    props.onNeedNodes(bufferStart, bufferEnd);
-  }
+  localScrollTop.value = newLocalScrollTop;
+  const topGlobalLine = (visibleItems.value.length > 0) ? visibleItems.value[0].id : 0;
+  emit('scroll', topGlobalLine);
+  emit('scrollData', {
+    scrollTop: newLocalScrollTop,
+    maxScroll: localMaxScroll
+  });
 }
 
 function handleNodeClick(node, e) {
@@ -425,19 +357,6 @@ defineExpose({
             </div>
           </div>
         </div>
-        
-        <Minimap
-          v-if="visibleNodes.length > 0 || parseStatus === 'parsing'"
-          :visibleNodes="visibleNodes"
-          :totalNodes="totalNodes"
-          :scrollTop="scrollTop"
-          :viewportHeight="containerHeight"
-          :totalHeight="totalHeight"
-          :isParsing="parseStatus === 'parsing'"
-          :memoryIndex="memoryIndex"
-          :content="currentFileText"
-          @jump="handleMinimapJump"
-        />
       </div>
     </div>
   </div>
@@ -601,7 +520,7 @@ defineExpose({
   background: var(--accent);
   color: var(--text-inverse);
   border: none;
-  border-radius: var(--radius-md);  /* 6px，更克制 */
+  border-radius: var(--radius-md);
   font-size: 14px;
   font-weight: var(--font-medium);
   cursor: pointer;
@@ -634,7 +553,7 @@ defineExpose({
 .shortcut-hint {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--text-muted);  /* 极淡 */
+  color: var(--text-muted);
 }
 
 .error-state {
@@ -712,9 +631,9 @@ defineExpose({
   align-items: center;
   justify-content: flex-end;
   width: 56px;
-  padding: 0 16px 0 0;  /* 只用右内边距留白，不用竖线 */
+  padding: 0 16px 0 0;
   background: transparent;
-  border-right: none;  /* 去掉竖线 */
+  border-right: none;
   flex-shrink: 0;
   user-select: none;
 }
@@ -723,7 +642,7 @@ defineExpose({
   color: var(--text-tertiary);
   font-size: 12px;
   font-family: var(--font-mono);
-  font-weight: var(--font-light);  /* 字重 300，细 */
+  font-weight: var(--font-light);
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
@@ -779,11 +698,11 @@ defineExpose({
 .node-key {
   color: var(--json-key);
   margin-right: 4px;
-  font-weight: var(--font-medium);  /* 键名字重 500 */
+  font-weight: var(--font-medium);
 }
 
 .colon {
-  color: var(--json-bracket);  /* 极淡灰，融入背景 */
+  color: var(--json-bracket);
   margin-right: 4px;
 }
 
@@ -791,7 +710,7 @@ defineExpose({
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 500px;
-  font-weight: var(--font-normal);  /* 值字重 400 */
+  font-weight: var(--font-normal);
 }
 
 .string-value {

@@ -77,7 +77,6 @@ const parseSteps = ref([
   { id: 'read', message: '读取文件', detail: '', done: false, active: false, startTime: 0, endTime: 0, duration: 0 },
   { id: 'validate', message: '流式校验', detail: '检查括号匹配...', done: false, active: false, startTime: 0, endTime: 0, duration: 0 },
   { id: 'index', message: '构建索引', detail: '扫描键名和结构...', done: false, active: false, startTime: 0, endTime: 0, duration: 0 },
-  { id: 'minimap', message: '绘制Minimap', detail: '基于索引生成缩略图...', done: false, active: false, startTime: 0, endTime: 0, duration: 0 },
   { id: 'render', message: '渲染可见区', detail: '格式化前30行...', done: false, active: false, startTime: 0, endTime: 0, duration: 0 }
 ]);
 
@@ -98,6 +97,12 @@ const cursorPosition = ref({ line: 1, column: 1 });
 const showCommandPalette = ref(false);
 const isTextMode = ref(false);
 const textContent = ref('');
+
+const currentGlobalLine = ref(0);
+const currentScrollTop = ref(0);
+const currentMaxScroll = ref(0);
+const jumpToLine = ref(-1);
+const WINDOW_SIZE = 100;
 
 // ============================================
 // 多Worker并行解析优化
@@ -129,7 +134,6 @@ function resetParseSteps() {
     { id: 'read', message: '读取文件', detail: '', done: false, active: false, startTime: 0, endTime: 0, duration: 0 },
     { id: 'validate', message: '流式校验', detail: '检查括号匹配...', done: false, active: false, startTime: 0, endTime: 0, duration: 0 },
     { id: 'index', message: '构建索引', detail: '扫描键名和结构...', done: false, active: false, startTime: 0, endTime: 0, duration: 0 },
-    { id: 'minimap', message: '绘制Minimap', detail: '基于索引生成缩略图...', done: false, active: false, startTime: 0, endTime: 0, duration: 0 },
     { id: 'render', message: '渲染可见区', detail: '格式化前30行...', done: false, active: false, startTime: 0, endTime: 0, duration: 0 }
   ];
   parseProgress.value = 0;
@@ -2668,6 +2672,8 @@ async function parseJSONContent(content, size, fileId = null, readDuration = 0) 
 
 async function selectFile(fileId) {
   isParsing.value = false;
+  jumpToLine.value = -1;
+  currentGlobalLine.value = 0;
   currentFileId.value = fileId;
   const file = files.value.find(f => f.id === fileId);
   
@@ -3087,8 +3093,10 @@ onUnmounted(() => {
           :memory-index="memoryIndex"
           :current-file-text="currentFileText"
           :onNeedNodes="handleNeedNodes"
+          :jumpToLine="jumpToLine"
           @toggleNode="toggleNode"
-          @scroll="handleScroll"
+          @scroll="(line) => currentGlobalLine = line"
+          @scrollData="(data) => { currentScrollTop = data.scrollTop; currentMaxScroll = data.maxScroll; }"
           @selectNode="handleSelectNode"
           @copyPath="copyPath"
           @search="handleSearch"
@@ -3135,7 +3143,12 @@ onUnmounted(() => {
         :is-parsing="isParsing"
         :parse-status="parseStatus"
         :is-console-open="showConsole"
+        :current-line="currentGlobalLine"
+        :window-size="WINDOW_SIZE"
+        :scroll-top="currentScrollTop"
+        :max-scroll="currentMaxScroll"
         @toggle-console="showConsole = !showConsole"
+        @jump="(line) => jumpToLine = line"
       />
     </footer> <!-- .app-footer -->
   </div> <!-- .app-layout -->
