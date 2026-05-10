@@ -712,16 +712,7 @@ html, body {
   color: var(--warning);
 }
 
-/* ========== Minimap（右侧）========== */
-.minimap {
-  position: absolute;
-  top: var(--search-height);
-  right: 0;
-  bottom: var(--statusbar-height);
-  width: 80px;
-  background: var(--bg-elevated);
-  border-left: 1px solid var(--border-light);
-}
+
 
 /* ========== 空状态 ========== */
 .empty-state {

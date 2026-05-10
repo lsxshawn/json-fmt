@@ -1,9 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import FolderIcon from './icons/FolderIcon.vue';
-import JsonIcon from './icons/JsonIcon.vue';
-import SearchIcon from './icons/SearchIcon.vue';
-import CloseIcon from './icons/CloseIcon.vue';
 import TriangleIcon from './icons/TriangleIcon.vue';
 
 const props = defineProps({
@@ -14,10 +11,6 @@ const props = defineProps({
   totalNodes: {
     type: Number,
     default: 0
-  },
-  searchQuery: {
-    type: String,
-    default: ''
   },
   currentFile: {
     type: Object,
@@ -31,22 +24,6 @@ const props = defineProps({
     type: String,
     default: ''
   },
-  searchMatchIndex: {
-    type: Number,
-    default: 0
-  },
-  searchMatchCount: {
-    type: Number,
-    default: 0
-  },
-  memoryIndex: {
-    type: Object,
-    default: null
-  },
-  currentFileText: {
-    type: String,
-    default: ''
-  },
   onNeedNodes: {
     type: Function,
     default: null
@@ -54,6 +31,14 @@ const props = defineProps({
   jumpToLine: {
     type: Number,
     default: -1
+  },
+  searchHighlightLine: {
+    type: Number,
+    default: -1
+  },
+  jumpTrigger: {
+    type: Number,
+    default: 0
   }
 });
 
@@ -63,9 +48,6 @@ const emit = defineEmits([
   'selectNode',
   'copyPath',
   'copyValue',
-  'search',
-  'searchNext',
-  'searchPrev',
   'pasteContent',
   'scrollData'
 ]);
@@ -76,7 +58,45 @@ const containerHeight = ref(600);
 const ITEM_HEIGHT = 28;
 const BUFFER_SIZE = 10;
 const highlightedNodeId = ref(null);
-const searchInputRef = ref(null);
+
+// ─── State machine per SKELETON_SCREEN.md P0 spec ───
+const ScrollState = Object.freeze({
+  IDLE: 'IDLE',
+  SCROLLING_FAST: 'SCROLLING_FAST',
+  SCROLLING_SLOW: 'SCROLLING_SLOW',
+  RENDERING: 'RENDERING',
+  READY: 'READY'
+});
+
+// 双重判断：delta大→拖拽(低阈值)，delta小→滚轮(高阈值)
+const DRAG_DELTA_THRESHOLD = 200;
+const FAST_THRESHOLD_DRAG = 2;
+const FAST_THRESHOLD_WHEEL = 10;
+
+const STOP_DETECTION_THRESHOLD = 30;
+
+const scrollState = ref(ScrollState.IDLE);
+
+// RAF metrics per P0 spec
+const lastScrollTop = ref(0);
+const lastScrollTime = ref(0);
+const lastDisplayScrollTop = ref(0);
+const scrollStartTime = ref(0);
+const lastWheelTime = ref(0);
+let rafId = null;
+
+// Skeleton: dynamic pool size covering 4K/Retina displays
+const SKELETON_POOL_SIZE = computed(() => {
+  const visibleLines = Math.ceil(containerHeight.value / ITEM_HEIGHT);
+  return Math.min(120, Math.max(60, visibleLines + 20));
+});
+const skeletonTopLine = ref(0);
+const showSkeleton = computed(() => {
+  if (scrollState.value === ScrollState.SCROLLING_FAST) return true;
+  if (scrollState.value === ScrollState.RENDERING) return true;
+  if (scrollState.value !== ScrollState.IDLE && visibleItems.value.length === 0) return true;
+  return false;
+});
 
 function updateContainerHeight() {
   if (containerRef.value) {
@@ -84,7 +104,13 @@ function updateContainerHeight() {
   }
 }
 
-const totalHeight = computed(() => props.totalNodes * ITEM_HEIGHT);
+const MAX_BROWSER_ELEMENT_HEIGHT = 30_000_000;
+
+const realTotalHeight = computed(() => props.totalNodes * ITEM_HEIGHT);
+
+const totalHeight = computed(() => Math.min(realTotalHeight.value, MAX_BROWSER_ELEMENT_HEIGHT));
+
+const scaleFactor = computed(() => realTotalHeight.value > totalHeight.value ? realTotalHeight.value / totalHeight.value : 1);
 
 const scrollLine = computed(() => Math.floor(localScrollTop.value / ITEM_HEIGHT));
 
@@ -95,18 +121,30 @@ const startIndex = computed(() => Math.max(0, scrollLine.value - BUFFER_SIZE));
 const endIndex = computed(() => Math.min(props.totalNodes, scrollLine.value + viewportItemCount.value + BUFFER_SIZE));
 
 const visibleItems = computed(() => {
-  const maxSafeEnd = Math.min(endIndex.value, props.visibleNodes.length);
-  const safeStart = Math.min(startIndex.value, maxSafeEnd);
-  return props.visibleNodes.slice(safeStart, maxSafeEnd);
+  if (!props.visibleNodes || props.visibleNodes.length === 0) return [];
+  const firstId = props.visibleNodes[0].id;
+  const localStart = Math.max(0, startIndex.value - firstId);
+  const localEnd = Math.min(props.visibleNodes.length, endIndex.value - firstId);
+  if (localStart >= localEnd) return [];
+  return props.visibleNodes.slice(localStart, localEnd);
 });
 
-const offsetY = computed(() => startIndex.value * ITEM_HEIGHT);
+const displayScrollLine = computed(() => Math.floor(displayScrollTopRef.value / ITEM_HEIGHT));
 
-watch(() => props.jumpToLine, (newLine) => {
-  if (newLine >= 0 && props.totalNodes > 0) {
-    localScrollTop.value = newLine * ITEM_HEIGHT;
+const offsetY = computed(() => Math.max(0, displayScrollLine.value - BUFFER_SIZE) * ITEM_HEIGHT);
+
+watch(() => props.jumpTrigger, () => {
+  const line = props.jumpToLine;
+  if (line >= 0 && props.totalNodes > 0) {
+    lastRenderedLine = -1;
+    updateContainerHeight();
+    const targetReal = line * ITEM_HEIGHT;
+    const visibleRealHeight = containerHeight.value * scaleFactor.value;
+    const targetCenter = targetReal - (visibleRealHeight / 2) + (ITEM_HEIGHT / 2);
+    const maxScroll = Math.max(0, realTotalHeight.value - visibleRealHeight);
+    localScrollTop.value = Math.max(0, Math.min(targetCenter, maxScroll));
     if (containerRef.value) {
-      containerRef.value.scrollTop = localScrollTop.value;
+      containerRef.value.scrollTop = localScrollTop.value / scaleFactor.value;
     }
   }
 }, { immediate: false });
@@ -115,6 +153,7 @@ const prevTotalNodes = ref(-1);
 watch(() => props.totalNodes, (newVal) => {
   if (newVal > 0 && prevTotalNodes.value !== newVal) {
     prevTotalNodes.value = newVal;
+    lastRenderedLine = -1;
     localScrollTop.value = 0;
     if (containerRef.value) {
       containerRef.value.scrollTop = 0;
@@ -122,55 +161,153 @@ watch(() => props.totalNodes, (newVal) => {
   }
 }, { immediate: false });
 
+// visibleItems 数据到达 → 关骨架屏（RENDERING / SCROLLING_SLOW 状态下生效）
+watch(visibleItems, (newVal) => {
+  const len = newVal ? newVal.length : 0;
+  if (len > 0 && (scrollState.value === ScrollState.RENDERING || scrollState.value === ScrollState.SCROLLING_SLOW)) {
+    scrollState.value = ScrollState.READY;
+  }
+});
+
+// [LOG-4] 请求数据
 watch([startIndex, endIndex], () => {
+  const s = Math.max(0, startIndex.value - 50);
+  const e = Math.min(props.totalNodes, endIndex.value + 50);
+  console.log('[LOG-4] onNeedNodes request', 'startIndex=', startIndex.value, 'endIndex=', endIndex.value, 'reqRange=', s, '-', e, 'totalNodes=', props.totalNodes, 'visibleNodes.len=', props.visibleNodes.length);
   if (props.onNeedNodes) {
-    props.onNeedNodes(Math.max(0, startIndex.value - 50), Math.min(props.totalNodes, endIndex.value + 50));
+    props.onNeedNodes(s, e);
   }
 }, { immediate: true });
 
-const currentMatchNodeId = computed(() => {
-  if (!props.searchQuery.trim() || props.searchMatchCount === 0) {
-    return null;
-  }
-  const matchNodes = props.visibleNodes.filter(node => {
-    const q = props.searchQuery.toLowerCase();
-    return node.key?.toLowerCase().includes(q) ||
-      node.displayValue?.toLowerCase().includes(q) ||
-      (node.fullValue?.toLowerCase() || '').includes(q);
-  });
-  if (matchNodes.length > 0 && props.searchMatchIndex > 0 && props.searchMatchIndex <= matchNodes.length) {
-    return matchNodes[props.searchMatchIndex - 1].id;
-  }
-  return null;
-});
-
-
-
-function highlightMatch(text) {
-  if (!props.searchQuery.trim() || !text) return text;
-  const query = props.searchQuery.toLowerCase();
-  const lowerText = text.toLowerCase();
-  const index = lowerText.indexOf(query);
-  if (index === -1) return text;
-  
-  const before = text.slice(0, index);
-  const match = text.slice(index, index + query.length);
-  const after = text.slice(index + query.length);
-  return { before, match, after, isMatch: true };
+// 滚动速度计算 per P0 spec
+function getScrollSpeed(curST, prevST, curTime, prevTime) {
+  const deltaY = Math.abs(curST - prevST);
+  const deltaT = curTime - prevTime;
+  return deltaT > 0 ? deltaY / deltaT : 0;
 }
+
+const displayScrollTopRef = ref(0);
+let lastRenderedLine = -1;
 
 function handleScroll(e) {
-  const localMaxScroll = Math.max(0, totalHeight.value - containerHeight.value);
-  const newLocalScrollTop = Math.max(0, Math.min(e.target.scrollTop, localMaxScroll));
-  
+  const now = performance.now();
+  const displayMaxScroll = Math.max(0, totalHeight.value - containerHeight.value);
+  const raw = Math.max(0, Math.min(e.target.scrollTop, displayMaxScroll));
+  const displayScrollTop = raw;
+  displayScrollTopRef.value = displayScrollTop;
+
+  const newLocalScrollTop = displayScrollTop * scaleFactor.value;
+  const newScrollLine = Math.floor(newLocalScrollTop / ITEM_HEIGHT);
   localScrollTop.value = newLocalScrollTop;
-  const topGlobalLine = (visibleItems.value.length > 0) ? visibleItems.value[0].id : 0;
-  emit('scroll', topGlobalLine);
-  emit('scrollData', {
-    scrollTop: newLocalScrollTop,
-    maxScroll: localMaxScroll
-  });
+
+  const prevDisplay = lastDisplayScrollTop.value;
+  const prevTime = lastScrollTime.value;
+  lastScrollTime.value = now;
+  lastScrollTop.value = newLocalScrollTop;
+  lastDisplayScrollTop.value = displayScrollTop;
+
+  const speed = getScrollSpeed(displayScrollTop, prevDisplay, now, prevTime);
+  const displayDelta = Math.abs(displayScrollTop - prevDisplay);
+
+  const displayTopLine = Math.floor(displayScrollTop / ITEM_HEIGHT);
+  skeletonTopLine.value = Math.max(0, displayTopLine - BUFFER_SIZE);
+
+  const isDrag = displayDelta > DRAG_DELTA_THRESHOLD;
+  const effectiveThreshold = isDrag ? FAST_THRESHOLD_DRAG : FAST_THRESHOLD_WHEEL;
+
+  emit('scroll', newScrollLine);
+
+  const lineChanged = newScrollLine !== lastRenderedLine;
+  if (lineChanged) {
+    lastRenderedLine = newScrollLine;
+    emit('scrollData', {
+      scrollTop: newLocalScrollTop,
+      maxScroll: realTotalHeight.value - containerHeight.value
+    });
+  }
+
+  // ─── P0 state machine transitions ───
+  // wheelRecent: 双重保险——wheel 事件标记 + 小 delta(滚轮特征) 永不走骨架屏
+  const wheelRecent = (now - lastWheelTime.value) < 200 || !isDrag;
+
+  if (scrollState.value === ScrollState.IDLE) {
+    scrollStartTime.value = now;
+    if (!wheelRecent && speed > effectiveThreshold) {
+      scrollState.value = ScrollState.SCROLLING_FAST;
+    } else {
+      scrollState.value = ScrollState.SCROLLING_SLOW;
+    }
+  } else if (scrollState.value === ScrollState.RENDERING) {
+    if (!wheelRecent && speed > effectiveThreshold) {
+      scrollState.value = ScrollState.SCROLLING_FAST;
+    } else {
+      scrollState.value = ScrollState.SCROLLING_SLOW;
+    }
+  } else if (!wheelRecent && speed > effectiveThreshold && scrollState.value === ScrollState.SCROLLING_SLOW) {
+    scrollState.value = ScrollState.SCROLLING_FAST;
+  }
+
+  // 确保 RAF 循环在跑
+  if (!rafId) {
+    rafId = requestAnimationFrame(rafLoop);
+  }
 }
+
+function rafLoop() {
+  const now = performance.now();
+  const timeSinceLastScroll = now - lastScrollTime.value;
+  const stationaryTime = lastScrollTop.value === scrollTopAtLastCheck ? timeSinceLastScroll : 0;
+
+  switch (scrollState.value) {
+    case ScrollState.SCROLLING_FAST:
+      if (timeSinceLastScroll > STOP_DETECTION_THRESHOLD) {
+        if (visibleItems.value.length > 0) {
+          scrollState.value = ScrollState.READY;
+        } else {
+          scrollState.value = ScrollState.RENDERING;
+        }
+      } else if (stationaryTime > 300) {
+        if (visibleItems.value.length > 0) {
+          scrollState.value = ScrollState.READY;
+        } else {
+          scrollState.value = ScrollState.RENDERING;
+        }
+      }
+      break;
+
+    case ScrollState.SCROLLING_SLOW:
+      if (timeSinceLastScroll > STOP_DETECTION_THRESHOLD) {
+        scrollState.value = ScrollState.READY;
+      }
+      break;
+
+    case ScrollState.READY:
+      scrollState.value = ScrollState.IDLE;
+      rafId = null;
+      return;
+
+    case ScrollState.RENDERING:
+      if (timeSinceLastScroll > 2000) {
+        // 安全兜底：数据超过2秒未到，强制恢复 IDLE（防止数据异常导致骨架屏死循环）
+        scrollState.value = ScrollState.READY;
+      }
+      break;
+
+    case ScrollState.IDLE:
+      rafId = null;
+      return;
+  }
+
+  scrollTopAtLastCheck = lastScrollTop.value;
+
+  if (scrollState.value !== ScrollState.IDLE) {
+    rafId = requestAnimationFrame(rafLoop);
+  } else {
+    rafId = null;
+  }
+}
+
+let scrollTopAtLastCheck = 0;
 
 function handleNodeClick(node, e) {
   emit('selectNode', node);
@@ -193,59 +330,41 @@ async function handlePaste() {
   }
 }
 
-function handleKeydown(e) {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
-    e.preventDefault();
-    searchInputRef.value?.focus();
+function handleMouseUp() {
+  if (scrollState.value === ScrollState.SCROLLING_FAST) {
+    if (visibleItems.value.length > 0) {
+      scrollState.value = ScrollState.READY;
+    } else {
+      scrollState.value = ScrollState.RENDERING;
+    }
   }
+}
+
+function handleWheel() {
+  lastWheelTime.value = performance.now();
 }
 
 onMounted(() => {
   updateContainerHeight();
-  window.addEventListener('keydown', handleKeydown);
   window.addEventListener('resize', updateContainerHeight);
+  containerRef.value?.addEventListener('wheel', handleWheel, { passive: true });
+  containerRef.value?.addEventListener('mouseup', handleMouseUp);
 });
 
 onUnmounted(() => {
-  window.removeEventListener('keydown', handleKeydown);
+  containerRef.value?.removeEventListener('wheel', handleWheel);
+  containerRef.value?.removeEventListener('mouseup', handleMouseUp);
+  if (rafId) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
 });
 
-defineExpose({
-  focusSearch: () => searchInputRef.value?.focus()
-});
+defineExpose({ updateContainerHeight });
 </script>
 
 <template>
   <div class="json-tree-view">
-    <div class="search-box">
-      <SearchIcon :size="14" class="search-icon" />
-      <input
-        ref="searchInputRef"
-        type="text"
-        placeholder="搜索 JSON..."
-        :value="searchQuery"
-        @input="e => emit('search', e.target.value)"
-        @keydown="handleSearchKeydown"
-      />
-      <span class="search-counter" v-if="searchQuery && props.searchMatchCount > 0">
-        {{ props.searchMatchIndex }}/{{ props.searchMatchCount }}
-      </span>
-      <span class="search-shortcut" v-if="!searchQuery">Ctrl+F</span>
-      <button class="search-btn" v-if="searchQuery" @click="emit('searchPrev')" title="上一个">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M18 15l-6-6-6 6"/>
-        </svg>
-      </button>
-      <button class="search-btn" v-if="searchQuery" @click="emit('searchNext')" title="下一个">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M6 9l6 6 6-6"/>
-        </svg>
-      </button>
-      <button class="search-clear" v-if="searchQuery" @click="emit('search', '')">
-        <CloseIcon :size="12" />
-      </button>
-    </div>
-
     <div class="tree-content">
       <div v-if="!currentFile" class="empty-main">
         <div class="empty-content">
@@ -287,14 +406,20 @@ defineExpose({
           @scroll="handleScroll"
         >
           <div :style="{ height: totalHeight + 'px' }" class="tree-content-inner">
-            <div :style="{ transform: `translateY(${offsetY}px)` }" class="tree-nodes">
+            <div v-if="showSkeleton" :style="{ transform: `translateY(${skeletonTopLine * ITEM_HEIGHT}px)` }" class="tree-nodes">
+              <div class="skeleton-block">
+                <div v-for="i in SKELETON_POOL_SIZE" :key="'skeleton-' + i" class="skeleton-bar skeleton-shimmer"></div>
+              </div>
+            </div>
+            <div v-else :style="{ transform: `translateY(${offsetY}px)` }" class="tree-nodes">
               <div
                 v-for="node in visibleItems"
                 :key="node.id"
                 class="tree-node"
                 :class="{
-                  'is-highlighted': currentMatchNodeId === node.id,
-                  'is-root': node.isRoot
+                  'is-highlighted': highlightedNodeId === node.id,
+                  'is-root': node.isRoot,
+                  'search-highlight': searchHighlightLine === node.id
                 }"
               >
                 <span class="line-gutter">
@@ -312,29 +437,14 @@ defineExpose({
                   </span>
                   <span v-else class="toggle-placeholder"></span>
 
-                  <span v-if="!node.isRoot" class="node-key">
-                    <template v-if="highlightMatch(node.key)?.isMatch">
-                      {{ highlightMatch(node.key).before }}<mark class="search-match">{{ highlightMatch(node.key).match }}</mark>{{ highlightMatch(node.key).after }}
-                    </template>
-                    <template v-else>{{ node.key }}</template>
-                  </span>
+                  <span v-if="!node.isRoot" class="node-key">{{ node.key }}</span>
                   <span v-if="!node.isRoot && node.type !== 'object' && node.type !== 'array'" class="colon">:</span>
 
                   <template v-if="node.type === 'string'">
-                    <span class="node-value string-value" :title="node.fullValue">
-                      <template v-if="highlightMatch(node.displayValue)?.isMatch">
-                        "{{ highlightMatch(node.displayValue).before }}<mark class="search-match">{{ highlightMatch(node.displayValue).match }}</mark>{{ highlightMatch(node.displayValue).after }}"
-                      </template>
-                      <template v-else>"{{ node.displayValue }}"</template>
-                    </span>
+                    <span class="node-value string-value" :title="node.fullValue">"{{ node.displayValue }}"</span>
                   </template>
                   <template v-else-if="node.type === 'number'">
-                    <span class="node-value number-value">
-                      <template v-if="highlightMatch(node.displayValue)?.isMatch">
-                        {{ highlightMatch(node.displayValue).before }}<mark class="search-match">{{ highlightMatch(node.displayValue).match }}</mark>{{ highlightMatch(node.displayValue).after }}
-                      </template>
-                      <template v-else>{{ node.displayValue }}</template>
-                    </span>
+                    <span class="node-value number-value">{{ node.displayValue }}</span>
                   </template>
                   <template v-else-if="node.type === 'boolean'">
                     <span class="node-value boolean-value">{{ node.displayValue }}</span>
@@ -369,92 +479,6 @@ defineExpose({
   flex-direction: column;
   background: var(--bg-base);
   overflow: hidden;
-}
-
-.search-box {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 16px;
-  height: 44px;
-  border-bottom: 1px solid var(--border-light);
-}
-
-.search-box:focus-within {
-  border-bottom-color: var(--accent);
-}
-
-.search-icon {
-  color: var(--text-tertiary);
-  flex-shrink: 0;
-}
-
-.search-box input {
-  flex: 1;
-  border: none;
-  background: transparent;
-  font-size: 14px;
-  color: var(--text-primary);
-  outline: none;
-}
-
-.search-box input::placeholder {
-  color: var(--text-tertiary);
-}
-
-.search-shortcut {
-  font-size: 11px;
-  padding: 2px 6px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-medium);
-  border-radius: var(--radius-sm);
-  color: var(--text-tertiary);
-  font-family: var(--font-mono);
-}
-
-.search-counter {
-  font-size: 11px;
-  padding: 2px 6px;
-  background: var(--accent);
-  color: var(--text-inverse);
-  border-radius: var(--radius-sm);
-  font-family: var(--font-mono);
-}
-
-.search-btn {
-  width: 20px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  color: var(--text-secondary);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-
-.search-btn:hover {
-  background: var(--bg-elevated);
-  color: var(--text-primary);
-}
-
-.search-clear {
-  width: 20px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  color: var(--text-secondary);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-
-.search-clear:hover {
-  background: var(--bg-elevated);
-  color: var(--text-primary);
 }
 
 .tree-content {
@@ -605,6 +629,7 @@ defineExpose({
   position: absolute;
   left: 0;
   right: 0;
+  will-change: transform;
 }
 
 .tree-node {
@@ -626,11 +651,17 @@ defineExpose({
   border-left-color: var(--accent);
 }
 
+.tree-node.search-highlight {
+  background: #fef9c3;
+  border-left: 3px solid #f59e0b;
+}
+
 .line-gutter {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  width: 56px;
+  min-width: 96px;
+  width: 96px;
   padding: 0 16px 0 0;
   background: transparent;
   border-right: none;
@@ -653,13 +684,6 @@ defineExpose({
   flex: 1;
   padding: 0 8px;
   min-width: 0;
-}
-
-.search-match {
-  background: var(--warning-light);
-  color: var(--text-primary);
-  border-radius: 2px;
-  padding: 0 2px;
 }
 
 .toggle-btn {
@@ -738,5 +762,34 @@ defineExpose({
   color: var(--text-secondary);
   font-size: 11px;
   margin: 0 4px;
+}
+
+.skeleton-block {
+  padding: 8px 12px;
+  background: #f3f4f6;
+  border-radius: 4px;
+  width: 100%;
+}
+
+.skeleton-bar {
+  height: 12px;
+  margin: 4px 0;
+  border-radius: 4px;
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    #e5e7eb 0%,
+    #e8e8e8 50%,
+    #e5e7eb 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 3s infinite linear;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
 </style>

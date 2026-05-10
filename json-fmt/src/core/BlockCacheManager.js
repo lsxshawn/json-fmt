@@ -61,19 +61,18 @@ export class BlockCacheManager {
     return { start, end, blockId };
   }
   
-  async loadBlocks(rangeStart, rangeEnd) {
-    const promises = [];
+  loadBlocks(rangeStart, rangeEnd) {
     let needsUpdate = false;
     
     console.log('[BlockCacheManager] loadBlocks: rangeStart:', rangeStart, 'rangeEnd:', rangeEnd, 
                 'activeBlocks.size:', this.activeBlocks.size);
     
     for (let blockId = rangeStart; blockId <= rangeEnd; blockId++) {
-      if (!this.activeBlocks.has(blockId) && !this.loadingPromises.has(blockId)) {
+      if (!this.activeBlocks.has(blockId)) {
         console.log('[BlockCacheManager] loadBlocks: loading block', blockId);
-        promises.push(this.loadBlock(blockId));
+        this._loadBlockSync(blockId);
         needsUpdate = true;
-      } else if (this.activeBlocks.has(blockId)) {
+      } else {
         // 更新已加载block的访问时间
         const block = this.activeBlocks.get(blockId);
         if (block) {
@@ -83,44 +82,15 @@ export class BlockCacheManager {
       }
     }
     
-    if (promises.length > 0) {
-      console.log('[BlockCacheManager] loadBlocks: waiting for', promises.length, 'blocks to load');
-      await Promise.all(promises);
-      console.log('[BlockCacheManager] loadBlocks: all blocks loaded');
-    }
-    
     this.recycleBlocks(rangeStart, rangeEnd);
     
-    // 无论是否有新blocks加载，都触发更新
-    // 因为滚动位置变了，需要重新渲染可见区域
-    if (this.onBlocksChanged) {
+    if (needsUpdate && this.onBlocksChanged) {
       const activeNodes = this.getActiveNodes();
-      console.log('[BlockCacheManager] loadBlocks: calling onBlocksChanged with', activeNodes.length, 'nodes');
       this.onBlocksChanged(activeNodes);
     }
   }
   
-  async loadBlock(blockId) {
-    if (!this.memoryIndex || !this.content) {
-      return null;
-    }
-    
-    const promise = new Promise((resolve) => {
-      setTimeout(() => {
-        this._loadBlockSync(blockId, resolve);
-      }, 0);
-    });
-    
-    this.loadingPromises.set(blockId, promise);
-    
-    try {
-      return await promise;
-    } finally {
-      this.loadingPromises.delete(blockId);
-    }
-  }
-  
-  _loadBlockSync(blockId, resolve) {
+  _loadBlockSync(blockId) {
     const range = this.getBlockRange(blockId);
     
     console.log('[BlockCacheManager] _loadBlockSync: blockId:', blockId, 
@@ -131,7 +101,7 @@ export class BlockCacheManager {
       startIndex: range.start,
       endIndex: range.end,
       nodes: [],
-      status: 'loading',
+      status: 'loaded',
       lastAccessTime: Date.now()
     };
     
@@ -144,11 +114,9 @@ export class BlockCacheManager {
       block.nodes = nodes;
       block.status = 'loaded';
       block.lastAccessTime = Date.now();
-      resolve(block);
     } catch (error) {
       console.error(`Failed to load block ${blockId}:`, error);
       block.status = 'error';
-      resolve(block);
     }
   }
   

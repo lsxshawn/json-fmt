@@ -5,6 +5,7 @@ import SideBar from '@/components/SideBar.vue';
 import EditorTabs from '@/components/EditorTabs.vue';
 import JsonTreeView from '@/components/JsonTreeView.vue';
 import StatusBar from '@/components/StatusBar.vue';
+import SearchPanel from '@/components/SearchPanel.vue';
 import DetailPanel from '@/components/DetailPanel.vue';
 import CommandPalette from '@/components/CommandPalette.vue';
 import SkeletonLoader from '@/components/SkeletonLoader.vue';
@@ -15,7 +16,7 @@ import EscapeIcon from '@/components/icons/EscapeIcon.vue';
 import ThemeIcon from '@/components/icons/ThemeIcon.vue';
 import MoreIcon from '@/components/icons/MoreIcon.vue';
 import SaveIcon from '@/components/icons/SaveIcon.vue';
-import { StreamingValidator, MemoryIndex, SearchController, ErrorHandler, BlockCacheManager } from '@/core/index.js';
+import { StreamingValidator, MemoryIndex, ErrorHandler, BlockCacheManager } from '@/core/index.js';
 import ParseProgress from '@/components/ParseProgress.vue';
 import ConsolePanel from '@/components/ConsolePanel.vue';
 
@@ -85,12 +86,10 @@ let autoCollapseTimer = null;
 
 let streamingValidator = null;
 let memoryIndex = null;
-let searchController = null;
 let errorHandler = null;
 let blockCacheManager = null;
 
 const showDetailPanel = ref(false);
-const searchQuery = ref('');
 const isDragging = ref(false);
 const cursorPosition = ref({ line: 1, column: 1 });
 
@@ -103,6 +102,11 @@ const currentScrollTop = ref(0);
 const currentMaxScroll = ref(0);
 const jumpToLine = ref(-1);
 const WINDOW_SIZE = 100;
+const searchPanelRef = ref(null);
+const jsonTreeRef = ref(null);
+const flatNodesForSearch = ref([]);
+const searchHighlightLine = ref(-1);
+const jumpTrigger = ref(0);
 
 // ============================================
 // 多Worker并行解析优化
@@ -216,18 +220,6 @@ function updateParseStep(stepId, detail = '', done = false) {
     parseProgress.value = ((stepIndex + (done ? 1 : 0)) / parseSteps.value.length) * 100;
   }
 }
-
-const filteredVisibleNodes = computed(() => {
-  if (!searchQuery.value) return visibleNodes.value;
-  const query = searchQuery.value.toLowerCase();
-  return visibleNodes.value.filter(node => {
-    if (!node || !node.k) return false;
-    return node.k.toLowerCase().includes(query);
-  });
-});
-
-const searchMatchIndex = ref(-1);
-const searchMatchCount = ref(0);
 
 const currentFile = computed(() => {
   return files.value.find(f => f.id === currentFileId.value);
@@ -2572,10 +2564,6 @@ async function parseJSONContent(content, size, fileId = null, readDuration = 0) 
       };
       memoryIndex.loadFromStreamingIndex(indexData, content);
       
-      if (searchController) {
-        searchController.destroy();
-      }
-      searchController = new SearchController(memoryIndex, content);
       completeParseStep('index', `${memoryIndex.keyCount?.toLocaleString() || 0} 键名`);
       
       // ============================================
@@ -2621,9 +2609,15 @@ async function parseJSONContent(content, size, fileId = null, readDuration = 0) 
             // 初始化缓存管理器
             blockCacheManager.initialize(memoryIndex, content, totalCount);
             
+            if (blockCacheManager.flatNodesCache && blockCacheManager.flatNodesCache.length > 0) {
+              flatNodesForSearch.value = blockCacheManager.flatNodesCache;
+              _lastReqStartBlock = -1;
+              _lastReqEndBlock = -1;
+            }
             // 设置回调函数
             blockCacheManager.onBlocksChanged = (nodes) => {
               // 使用新数组触发响应式更新
+              console.log('[LOG-7] onBlocksChanged → visibleNodes.value, len=', nodes.length, 'first id=', nodes.length > 0 ? nodes[0].id : -1, 'last id=', nodes.length > 0 ? nodes[nodes.length - 1].id : -1);
               visibleNodes.value = [...nodes];
             };
             
@@ -2904,32 +2898,13 @@ function formatJSON() {
   }
 }
 
-function handleSearch(query) {
-  searchQuery.value = query;
-  
-  if (query) {
-    const matches = visibleNodes.value.filter(n => n && n.k && n.k.toLowerCase().includes(query.toLowerCase()));
-    searchMatchCount.value = matches.length;
-    searchMatchIndex.value = 0;
-  } else {
-    searchMatchCount.value = 0;
-    searchMatchIndex.value = -1;
-  }
-}
-
-function handleSearchNext() {
-  if (searchMatchCount.value === 0) return;
-  searchMatchIndex.value = (searchMatchIndex.value + 1) % searchMatchCount.value;
-}
-
-function handleSearchPrev() {
-  if (searchMatchCount.value === 0) return;
-  searchMatchIndex.value = (searchMatchIndex.value - 1 + searchMatchCount.value) % searchMatchCount.value;
-}
-
 function handleSelectNode(node) {
   selectedNode.value = node;
   showDetailPanel.value = true;
+}
+
+function handleSearchPanelResize() {
+  jsonTreeRef.value?.updateContainerHeight();
 }
 
 function handleUpdateValue({ nodeId, value }) {
@@ -2961,6 +2936,9 @@ function handleScroll(pos) {
   cursorPosition.value = pos;
 }
 
+let _lastReqStartBlock = -1;
+let _lastReqEndBlock = -1;
+
 function handleNeedNodes(start, end) {
   if (!blockCacheManager) return;
   
@@ -2968,11 +2946,17 @@ function handleNeedNodes(start, end) {
   const startBlock = Math.max(0, Math.floor(start / blockSize) - 1);
   const endBlock = Math.ceil(end / blockSize) + 1;
   
-  console.log('[handleNeedNodes] start:', start, 'end:', end, 
-              'startBlock:', startBlock, 'endBlock:', endBlock,
-              'blockSize:', blockSize);
+  if (_lastReqStartBlock === startBlock && _lastReqEndBlock === endBlock && visibleNodes.value.length > 0) return;
+  _lastReqStartBlock = startBlock;
+  _lastReqEndBlock = endBlock;
   
+  // [LOG-6] App: 收到JsonTreeView的数据请求
+  console.log('[LOG-6] handleNeedNodes start=', start, 'end=', end, '→ blocks', startBlock, '-', endBlock, 'totalNodes=', totalNodes.value, 'visibleNodes.len=', visibleNodes.value.length);
+  
+  const t0 = performance.now();
   blockCacheManager.loadBlocks(startBlock, endBlock);
+  const t1 = performance.now();
+  console.log('[LOG-6] loadBlocks done:', (t1 - t0).toFixed(2), 'ms', 'visibleNodes.len after=', visibleNodes.value.length);
 }
 
 function toggleTheme() {
@@ -3081,27 +3065,21 @@ onUnmounted(() => {
         
         <JsonTreeView
           v-show="!isTextMode && (parseStatus !== 'parsing' || visibleNodes.length > 0)"
-          ref="containerRef"
-          :visibleNodes="filteredVisibleNodes"
+          ref="jsonTreeRef"
+          :visibleNodes="visibleNodes"
           :totalNodes="totalNodes"
-          :searchQuery="searchQuery"
           :currentFile="currentFile"
           :parseStatus="parseStatus"
           :errorMessage="errorMessage"
-          :searchMatchIndex="searchMatchIndex"
-          :searchMatchCount="searchMatchCount"
-          :memory-index="memoryIndex"
-          :current-file-text="currentFileText"
           :onNeedNodes="handleNeedNodes"
           :jumpToLine="jumpToLine"
+          :jump-trigger="jumpTrigger"
+          :search-highlight-line="searchHighlightLine"
           @toggleNode="toggleNode"
           @scroll="(line) => currentGlobalLine = line"
           @scrollData="(data) => { currentScrollTop = data.scrollTop; currentMaxScroll = data.maxScroll; }"
           @selectNode="handleSelectNode"
           @copyPath="copyPath"
-          @search="handleSearch"
-          @searchNext="handleSearchNext"
-          @searchPrev="handleSearchPrev"
           @pasteContent="handlePasteContent"
           @openFiles="handleOpenFiles"
         />
@@ -3135,6 +3113,14 @@ onUnmounted(() => {
       @clear="clearLog"
     />
 
+    <SearchPanel
+      ref="searchPanelRef"
+      :flatNodes="flatNodesForSearch"
+      :totalNodes="totalNodes"
+      @jumpToLine="(line) => { jumpToLine = line; searchHighlightLine = line; jumpTrigger++; }"
+      @heightChange="handleSearchPanelResize"
+    />
+
     <footer class="app-footer">
       <StatusBar
         :fileSize="fileSize"
@@ -3148,7 +3134,7 @@ onUnmounted(() => {
         :scroll-top="currentScrollTop"
         :max-scroll="currentMaxScroll"
         @toggle-console="showConsole = !showConsole"
-        @jump="(line) => jumpToLine = line"
+        @jump="(line) => { jumpToLine = line; jumpTrigger++; }"
       />
     </footer> <!-- .app-footer -->
   </div> <!-- .app-layout -->
@@ -3161,7 +3147,6 @@ onUnmounted(() => {
     @format="formatJSON"
     @escape="toggleEscape"
     @toggleTheme="toggleTheme"
-    @search="handleSearch"
   />
   </div> <!-- .app -->
 </template>
