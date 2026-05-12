@@ -1,31 +1,30 @@
-# 当前任务：缓速滚动 + 搜索跳转实测验证
+# 当前任务：折叠稳定性 + 搜索跳转综合验证
 
-> 开始：2026-05-10 | 状态：🟡 修复完成，等待实测验证 | 详情：`archive/2026-05-10.md`
+> 最后更新：2026-05-12 | 状态：🟡 虚拟展开折叠已实现，折叠稳定性4轮已修复，待实测
 
-## 已明确的结论（下次不再重复验证）
+## 本次已完成
 
-1. **ResizeObserver 在虚拟滚动场景下有害**——强制回流，已删除，改用显式调用 `updateContainerHeight()`
-2. **布尔标志 `isWheelSource` 有单次消费缺陷**——改用 `lastWheelTime` 时间戳 + 150ms 窗口
-3. **`lastRenderedLine` 解耦时状态机/timing/RAF 永远执行**——只抑制渲染 emit
-4. **`displayScrollLine` 用 DOM scrollTop 直接计算**——禁用 `localScrollTop/scaleFactor` 链
-5. **BlockCacheManager `onBlocksChanged` 仅在 `needsUpdate=true` 时触发**——防止每帧重建数组
-6. **Vue scoped CSS 不支持 v-html 注入元素**——需全局 `<style>` 块
-7. **`watch(jumpToLine)` 值不变时不触发**——需 `jumpTrigger` 计数器
+### 微速滚动晃动（P0）— 第9轮终极修复 ✅
+根因：浏览器 `overflow-anchor:auto` 反馈环路。
+修复：`.tree-scroll { overflow-anchor: none }` + `.tree-content-inner { contain: layout style }`
+
+### 虚拟展开折叠 — 从零实现 ✅
+- 清理 196 行僵尸代码（6个死函数 + 3个空 Worker case）
+- BlockCacheManager 新增 5 个数据结构 + 9 个方法
+- 搜索跳转 prepareJumpToVisible + handleSearchJump
+
+### 折叠稳定性（4 轮） ✅
+- 3.1 折叠后回到首行 → watch 守卫
+- 3.2 折叠后上方空白 → flatVisibleRange
+- 3.3 锚点纠错 → 改为被点击 nodeId
+- 3.4 移除多余 scrollTop 调整
+- 3.5 坐标空间统一 → visibleItems 用 flatId 范围
 
 ## 待验证
 
 | 优先级 | 验证项 | 说明 |
 |:---|:---|:---|
-| P0 | 缓速滚动 UI 稳定性 | BlockCacheManager `onBlocksChanged` 仅在 needsUpdate 时触发 → 晃动应消失 |
-| P0 | 滚轮 → 0 骨架屏 | 双重保险 `wheelRecent < 200ms \|\| !isDrag` |
-| P1 | 搜索跳转到行居中 | `updateContainerHeight()` + `+ITEM_HEIGHT/2` |
-| P1 | 搜索关键词高亮 | `highlightKeyword()` + 全局 `<style>` 块 `.search-panel .match-highlight` |
-
-## 最近修改文件
-
-| 文件 | 关键变更 |
-|:---|:---|
-| `src/components/JsonTreeView.vue` | L189 displayScrollTopRef / L218 emit('scroll',newScrollLine) / L353 defineExpose(updateContainerHeight) |
-| `src/components/SearchPanel.vue` | 新建 + 全局 style 块 match-highlight + scrollActiveIntoView + highlightKeyword |
-| `src/App.vue` | L105 jsonTreeRef / L2937 lastReqBlock守卫 / L2903 handleSearchPanelResize / 删除旧搜索 |
-| `src/core/BlockCacheManager.js` | L88 `if (needsUpdate) onBlocksChanged` |
+| P0 | 折叠稳定性综合场景 | 多节点折叠/展开 + 快速滚动 + 搜索跳转 |
+| P1 | 搜索跳转居中 | prepareJumpToVisible + flatVisibleRange 端到端 |
+| P1 | setScrollTopToLine 清理评估 | 函数已不用于折叠，评估是否移除 |
+| P2 | expandAll/collapseAll 实测 | 边界场景 |

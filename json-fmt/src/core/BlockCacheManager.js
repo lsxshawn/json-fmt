@@ -20,6 +20,12 @@ export class BlockCacheManager {
     // 缓存解析后的完整数据
     this.parsedData = null;
     this.flatNodesCache = [];
+    
+    this.collapsedNodes = new Set();
+    this.parentMap = new Map();
+    this.childrenMap = new Map();
+    this._visibleCache = [];
+    this._visibleIdSet = new Set();
   }
   
   initialize(index, content, totalNodes) {
@@ -29,6 +35,11 @@ export class BlockCacheManager {
     this.activeBlocks.clear();
     this.recyclingQueue = [];
     this.loadingPromises.clear();
+    this.collapsedNodes.clear();
+    this.parentMap.clear();
+    this.childrenMap.clear();
+    this._visibleCache.length = 0;
+    this._visibleIdSet.clear();
     
     // 解析完整数据
     try {
@@ -175,6 +186,14 @@ export class BlockCacheManager {
       const node = this._createNode(v, k, d, idCounter++, r);
       flatNodes.push(node);
       
+      if (parent !== null && parent !== undefined) {
+        this.parentMap.set(node.id, parent);
+        if (!this.childrenMap.has(parent)) {
+          this.childrenMap.set(parent, []);
+        }
+        this.childrenMap.get(parent).push(node.id);
+      }
+      
       // 如果是对象或数组，添加子节点到栈
       if (node.hasChildren && v) {
         const keys = Array.isArray(v) ? v.map((_, i) => i) : Object.keys(v);
@@ -193,6 +212,8 @@ export class BlockCacheManager {
     }
     
     this.flatNodesCache = flatNodes;
+    this._visibleCache = [...flatNodes];
+    this._visibleIdSet = new Set(flatNodes.map(n => n.id));
     console.log('[BlockCacheManager] _buildFlatNodesCache: finished, flatNodesCache.length:', this.flatNodesCache.length);
   }
   
@@ -472,7 +493,11 @@ export class BlockCacheManager {
     for (const blockId of sortedBlockIds) {
       const block = this.activeBlocks.get(blockId);
       if (block && block.status === 'loaded' && block.nodes) {
-        nodes.push(...block.nodes);
+        for (const node of block.nodes) {
+          if (this._visibleIdSet.has(node.id)) {
+            nodes.push(node);
+          }
+        }
       }
     }
     
@@ -505,6 +530,123 @@ export class BlockCacheManager {
     return block && block.status === 'loaded';
   }
   
+  isRangeLoaded(rangeStart, rangeEnd) {
+    for (let blockId = rangeStart; blockId <= rangeEnd; blockId++) {
+      if (!this.isBlockLoaded(blockId)) return false
+    }
+    return true
+  }
+  
+  isCollapsed(nodeId) {
+    return this.collapsedNodes.has(nodeId);
+  }
+  
+  getTotalVisibleNodes() {
+    return this._visibleCache.length;
+  }
+  
+  getVisibleNodeIndex(nodeId) {
+    for (let i = 0; i < this._visibleCache.length; i++) {
+      if (this._visibleCache[i].id === nodeId) return i;
+    }
+    return -1;
+  }
+  
+  getVisibleAncestor(nodeId) {
+    let cur = this.parentMap.get(nodeId);
+    while (cur !== undefined) {
+      if (this.collapsedNodes.has(cur)) return cur;
+      cur = this.parentMap.get(cur);
+    }
+    return null;
+  }
+  
+  visibleToFlatRange(start, end) {
+    const len = this._visibleCache.length;
+    if (len === 0) return { start: 0, end: 0 };
+    const s = Math.max(0, Math.min(start, len - 1));
+    const e = Math.max(0, Math.min(end - 1, len - 1));
+    return {
+      start: this._visibleCache[s].id,
+      end: this._visibleCache[e].id + 1
+    };
+  }
+  
+  prepareJumpToVisible(flatId) {
+    const ancestor = this.getVisibleAncestor(flatId);
+    if (ancestor !== null) {
+      this.collapsedNodes.delete(ancestor);
+      this._expandInVisibleCache(ancestor);
+      this._visibleIdSet = new Set(this._visibleCache.map(n => n.id));
+      if (this.onBlocksChanged) {
+        this.onBlocksChanged(this.getActiveNodes());
+      }
+    }
+    return this.getVisibleNodeIndex(flatId);
+  }
+  
+  toggleNode(nodeId) {
+    if (!this.childrenMap.has(nodeId) || this.childrenMap.get(nodeId).length === 0) return -1;
+    
+    const wasCollapsed = this.collapsedNodes.has(nodeId);
+    if (wasCollapsed) {
+      this.collapsedNodes.delete(nodeId);
+      this._expandInVisibleCache(nodeId);
+    } else {
+      this.collapsedNodes.add(nodeId);
+      this._collapseInVisibleCache(nodeId);
+    }
+    
+    this._visibleIdSet = new Set(this._visibleCache.map(n => n.id));
+    
+    if (this.onBlocksChanged) {
+      this.onBlocksChanged(this.getActiveNodes());
+    }
+    
+    return this.getVisibleNodeIndex(nodeId);
+  }
+  
+  _expandInVisibleCache(nodeId) {
+    const idx = this._visibleCache.findIndex(n => n.id === nodeId);
+    if (idx === -1) return;
+    
+    const directChildren = this.childrenMap.get(nodeId) || [];
+    if (directChildren.length === 0) return;
+    
+    const childNodes = directChildren
+      .map(cid => this.flatNodesCache[cid])
+      .filter(Boolean);
+    
+    this._visibleCache.splice(idx + 1, 0, ...childNodes);
+  }
+  
+  _collapseInVisibleCache(nodeId) {
+    const idx = this._visibleCache.findIndex(n => n.id === nodeId);
+    if (idx === -1) return;
+    
+    let count = 0;
+    for (let i = idx + 1; i < this._visibleCache.length; i++) {
+      if (this._isAncestor(nodeId, this._visibleCache[i].id)) {
+        count++;
+      } else {
+        break;
+      }
+    }
+    
+    if (count > 0) {
+      this._visibleCache.splice(idx + 1, count);
+    }
+  }
+  
+  _isAncestor(ancestorId, nodeId) {
+    let cur = this.parentMap.get(nodeId);
+    while (cur !== undefined) {
+      if (cur === ancestorId) return true;
+      cur = this.parentMap.get(cur);
+    }
+    return false;
+  }
+  
   clear() {
     this.activeBlocks.forEach(block => {
       if (block.nodes) {
@@ -515,8 +657,12 @@ export class BlockCacheManager {
     this.recyclingQueue = [];
     this.loadingPromises.clear();
     
-    // 清理缓存的解析数据
     this.parsedData = null;
     this.flatNodesCache = [];
+    this.collapsedNodes.clear();
+    this.parentMap.clear();
+    this.childrenMap.clear();
+    this._visibleCache.length = 0;
+    this._visibleIdSet.clear();
   }
 }

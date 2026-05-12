@@ -36,6 +36,14 @@ const props = defineProps({
     type: Number,
     default: -1
   },
+  flatVisibleStart: {
+    type: Number,
+    default: 0
+  },
+  flatVisibleEnd: {
+    type: Number,
+    default: 0
+  },
   jumpTrigger: {
     type: Number,
     default: 0
@@ -122,16 +130,20 @@ const endIndex = computed(() => Math.min(props.totalNodes, scrollLine.value + vi
 
 const visibleItems = computed(() => {
   if (!props.visibleNodes || props.visibleNodes.length === 0) return [];
-  const firstId = props.visibleNodes[0].id;
-  const localStart = Math.max(0, startIndex.value - firstId);
-  const localEnd = Math.min(props.visibleNodes.length, endIndex.value - firstId);
-  if (localStart >= localEnd) return [];
-  return props.visibleNodes.slice(localStart, localEnd);
+  const startId = props.flatVisibleStart - 50;
+  const endId = props.flatVisibleEnd + 50;
+  let si = 0;
+  while (si < props.visibleNodes.length && props.visibleNodes[si].id < startId) si++;
+  let ei = si;
+  while (ei < props.visibleNodes.length && props.visibleNodes[ei].id <= endId) ei++;
+  if (si >= ei) return [];
+  return props.visibleNodes.slice(si, ei);
 });
 
-const displayScrollLine = computed(() => Math.floor(displayScrollTopRef.value / ITEM_HEIGHT));
-
-const offsetY = computed(() => Math.max(0, displayScrollLine.value - BUFFER_SIZE) * ITEM_HEIGHT);
+const offsetY = computed(() => {
+  const line = Math.floor(localScrollTop.value / ITEM_HEIGHT)
+  return Math.max(0, line - BUFFER_SIZE) * ITEM_HEIGHT / scaleFactor.value
+})
 
 watch(() => props.jumpTrigger, () => {
   const line = props.jumpToLine;
@@ -151,14 +163,14 @@ watch(() => props.jumpTrigger, () => {
 
 const prevTotalNodes = ref(-1);
 watch(() => props.totalNodes, (newVal) => {
-  if (newVal > 0 && prevTotalNodes.value !== newVal) {
-    prevTotalNodes.value = newVal;
+  if (newVal > 0 && prevTotalNodes.value !== newVal && prevTotalNodes.value <= 0) {
     lastRenderedLine = -1;
     localScrollTop.value = 0;
     if (containerRef.value) {
       containerRef.value.scrollTop = 0;
     }
   }
+  prevTotalNodes.value = newVal;
 }, { immediate: false });
 
 // visibleItems 数据到达 → 关骨架屏（RENDERING / SCROLLING_SLOW 状态下生效）
@@ -169,15 +181,18 @@ watch(visibleItems, (newVal) => {
   }
 });
 
-// [LOG-4] 请求数据
-watch([startIndex, endIndex], () => {
-  const s = Math.max(0, startIndex.value - 50);
-  const e = Math.min(props.totalNodes, endIndex.value + 50);
-  console.log('[LOG-4] onNeedNodes request', 'startIndex=', startIndex.value, 'endIndex=', endIndex.value, 'reqRange=', s, '-', e, 'totalNodes=', props.totalNodes, 'visibleNodes.len=', props.visibleNodes.length);
+let _lastReqS = -1
+
+watch(startIndex, () => {
+  const s = Math.max(0, startIndex.value - 50)
+  const e = Math.min(props.totalNodes, endIndex.value + 50)
+  if (s === _lastReqS) return
+  _lastReqS = s
+  console.log('[LOG-4] onNeedNodes request', 'startIndex=', startIndex.value, 'endIndex=', endIndex.value, 'reqRange=', s, '-', e, 'totalNodes=', props.totalNodes, 'visibleNodes.len=', props.visibleNodes.length)
   if (props.onNeedNodes) {
-    props.onNeedNodes(s, e);
+    props.onNeedNodes(s, e)
   }
-}, { immediate: true });
+})
 
 // 滚动速度计算 per P0 spec
 function getScrollSpeed(curST, prevST, curTime, prevTime) {
@@ -186,7 +201,6 @@ function getScrollSpeed(curST, prevST, curTime, prevTime) {
   return deltaT > 0 ? deltaY / deltaT : 0;
 }
 
-const displayScrollTopRef = ref(0);
 let lastRenderedLine = -1;
 
 function handleScroll(e) {
@@ -194,7 +208,6 @@ function handleScroll(e) {
   const displayMaxScroll = Math.max(0, totalHeight.value - containerHeight.value);
   const raw = Math.max(0, Math.min(e.target.scrollTop, displayMaxScroll));
   const displayScrollTop = raw;
-  displayScrollTopRef.value = displayScrollTop;
 
   const newLocalScrollTop = displayScrollTop * scaleFactor.value;
   const newScrollLine = Math.floor(newLocalScrollTop / ITEM_HEIGHT);
@@ -209,8 +222,8 @@ function handleScroll(e) {
   const speed = getScrollSpeed(displayScrollTop, prevDisplay, now, prevTime);
   const displayDelta = Math.abs(displayScrollTop - prevDisplay);
 
-  const displayTopLine = Math.floor(displayScrollTop / ITEM_HEIGHT);
-  skeletonTopLine.value = Math.max(0, displayTopLine - BUFFER_SIZE);
+  const skeletonLine = Math.floor(newLocalScrollTop / ITEM_HEIGHT);
+  skeletonTopLine.value = Math.max(0, skeletonLine - BUFFER_SIZE);
 
   const isDrag = displayDelta > DRAG_DELTA_THRESHOLD;
   const effectiveThreshold = isDrag ? FAST_THRESHOLD_DRAG : FAST_THRESHOLD_WHEEL;
@@ -344,6 +357,16 @@ function handleWheel() {
   lastWheelTime.value = performance.now();
 }
 
+function setScrollTopToLine(line) {
+  if (line < 0) return
+  const targetLocal = line * ITEM_HEIGHT
+  const maxLocal = Math.max(0, realTotalHeight.value - containerHeight.value * scaleFactor.value)
+  localScrollTop.value = Math.min(targetLocal, maxLocal)
+  if (containerRef.value) {
+    containerRef.value.scrollTop = localScrollTop.value / scaleFactor.value
+  }
+}
+
 onMounted(() => {
   updateContainerHeight();
   window.addEventListener('resize', updateContainerHeight);
@@ -360,7 +383,7 @@ onUnmounted(() => {
   }
 });
 
-defineExpose({ updateContainerHeight });
+defineExpose({ updateContainerHeight, setScrollTopToLine });
 </script>
 
 <template>
@@ -406,7 +429,7 @@ defineExpose({ updateContainerHeight });
           @scroll="handleScroll"
         >
           <div :style="{ height: totalHeight + 'px' }" class="tree-content-inner">
-            <div v-if="showSkeleton" :style="{ transform: `translateY(${skeletonTopLine * ITEM_HEIGHT}px)` }" class="tree-nodes">
+            <div v-if="showSkeleton" :style="{ transform: `translateY(${skeletonTopLine * ITEM_HEIGHT / scaleFactor}px)` }" class="tree-nodes">
               <div class="skeleton-block">
                 <div v-for="i in SKELETON_POOL_SIZE" :key="'skeleton-' + i" class="skeleton-bar skeleton-shimmer"></div>
               </div>
@@ -618,11 +641,13 @@ defineExpose({ updateContainerHeight });
   flex: 1;
   overflow-y: scroll;
   overflow-x: auto;
+  overflow-anchor: none;
 }
 
 .tree-content-inner {
   position: relative;
   min-width: max-content;
+  contain: layout style;
 }
 
 .tree-nodes {

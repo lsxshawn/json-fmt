@@ -105,6 +105,8 @@ const WINDOW_SIZE = 100;
 const searchPanelRef = ref(null);
 const jsonTreeRef = ref(null);
 const flatNodesForSearch = ref([]);
+const flatVisibleStart = ref(0);
+const flatVisibleEnd = ref(0);
 const searchHighlightLine = ref(-1);
 const jumpTrigger = ref(0);
 
@@ -231,7 +233,6 @@ let pendingParseTask = null;
 
 const workerCode = `
 let rawData = '';
-let parsedTree = null;
 let nodeIdCounter = 0;
 
 function generateId() {
@@ -525,190 +526,6 @@ function parseShardFast(data, basePath, baseId, maxDepth = 8, maxNodes = 500000)
   }
   
   return { nodes: result, lastId: localId, truncated: nodeCount >= maxNodes };
-}
-
-function getDisplayValue(node) {
-  if (typeof node.v === 'string') {
-    return node.v.length > 200 ? node.v.substring(0, 200) + '...' : node.v;
-  }
-  if (node.v === null) {
-    return 'null';
-  }
-  if (typeof node.v === 'boolean') {
-    return String(node.v);
-  }
-  if (typeof node.v === 'number') {
-    return String(node.v);
-  }
-  if (node.type === 'array') {
-    const len = node._rawValue ? (Array.isArray(node._rawValue) ? node._rawValue.length : 0) : 0;
-    return 'Array(' + len + ')';
-  }
-  if (node.type === 'object') {
-    const raw = node._rawValue;
-    const len = raw && typeof raw === 'object' ? Object.keys(raw).length : 0;
-    return 'Object(' + len + ')';
-  }
-  return String(node.v);
-}
-
-function flattenTree(root) {
-  if (!root) return [];
-  
-  const result = [];
-  const stack = [root];
-  
-  while (stack.length > 0) {
-    const node = stack.pop();
-    if (!node) continue;
-    
-    const raw = node._rawValue;
-    const childCount = raw ? (Array.isArray(raw) ? raw.length : (typeof raw === 'object' ? Object.keys(raw).length : 0)) : 0;
-    const displayValue = getDisplayValue(node);
-    
-    if (!node.collapsed) {
-      result.push({
-        id: node.id,
-        key: node.k,
-        type: node.type,
-        path: node.path,
-        displayPath: node.displayPath,
-        depth: node.depth,
-        isRoot: node.isRoot,
-        collapsed: node.collapsed,
-        hasChildren: node.children && node.children.length > 0,
-        displayValue: displayValue,
-        fullValue: typeof node.v === 'string' ? node.v : undefined,
-        childCount: childCount
-      });
-      
-      if (node.children && node.children.length > 0) {
-        for (let i = node.children.length - 1; i >= 0; i--) {
-          stack.push(node.children[i]);
-        }
-      }
-    } else {
-      result.push({
-        id: node.id,
-        key: node.k,
-        type: node.type,
-        path: node.path,
-        displayPath: node.displayPath,
-        depth: node.depth,
-        isRoot: node.isRoot,
-        collapsed: node.collapsed,
-        hasChildren: true,
-        displayValue: displayValue,
-        fullValue: typeof node.v === 'string' ? node.v : undefined,
-        childCount: childCount
-      });
-    }
-  }
-  
-  return result;
-}
-
-function countNodes(root) {
-  if (!root) return 0;
-  
-  let count = 0;
-  const stack = [root];
-  
-  while (stack.length > 0) {
-    const node = stack.pop();
-    if (!node) continue;
-    
-    count++;
-    
-    if (node._isLazy && node._rawValue) {
-      if (Array.isArray(node._rawValue)) {
-        count += node._rawValue.length;
-      } else if (typeof node._rawValue === 'object') {
-        count += Object.keys(node._rawValue).length;
-      }
-    }
-    
-    if (node.children && node.children.length > 0) {
-      for (let i = node.children.length - 1; i >= 0; i--) {
-        stack.push(node.children[i]);
-      }
-    }
-  }
-  
-  return count;
-}
-
-function expandAll() {
-  if (!parsedTree) return;
-  
-  const stack = [parsedTree];
-  
-  while (stack.length > 0) {
-    const node = stack.pop();
-    if (!node) continue;
-    
-    node.collapsed = false;
-    const originalMaxChildren = node._maxChildren;
-    node._maxChildren = Infinity;
-    ensureChildren(node);
-    node._maxChildren = originalMaxChildren;
-    
-    if (node.children && node.children.length > 0) {
-      for (let i = node.children.length - 1; i >= 0; i--) {
-        stack.push(node.children[i]);
-      }
-    }
-  }
-}
-
-function collapseAll() {
-  if (!parsedTree) return;
-  
-  const stack = [parsedTree];
-  
-  while (stack.length > 0) {
-    const node = stack.pop();
-    if (!node) continue;
-    
-    node.collapsed = true;
-    
-    if (node.children && node.children.length > 0) {
-      for (let i = node.children.length - 1; i >= 0; i--) {
-        stack.push(node.children[i]);
-      }
-    }
-  }
-}
-
-function toggleNode(nodeId) {
-  if (!parsedTree) return { visibleNodes: [], totalNodes: 0 };
-  
-  const stack = [parsedTree];
-  
-  while (stack.length > 0) {
-    const node = stack.pop();
-    if (!node) continue;
-    
-    if (node.id === nodeId) {
-      node.collapsed = !node.collapsed;
-      if (!node.collapsed) {
-        const originalMaxChildren = node._maxChildren;
-        node._maxChildren = Infinity;
-        ensureChildren(node);
-        node._maxChildren = originalMaxChildren;
-      }
-      break;
-    }
-    
-    if (node.children && node.children.length > 0) {
-      for (let i = node.children.length - 1; i >= 0; i--) {
-        stack.push(node.children[i]);
-      }
-    }
-  }
-  
-  const visibleNodes = flattenTree(parsedTree);
-  return { visibleNodes, totalNodes: visibleNodes.length };
 }
 
 function estimateNodeCount(obj) {
@@ -1586,12 +1403,6 @@ self.onmessage = function(e) {
           shardIndex: shardIndex 
         });
       }
-      break;
-    case 'toggle':
-      break;
-    case 'expandAll':
-      break;
-    case 'collapseAll':
       break;
   }
 };
@@ -2616,9 +2427,9 @@ async function parseJSONContent(content, size, fileId = null, readDuration = 0) 
             }
             // 设置回调函数
             blockCacheManager.onBlocksChanged = (nodes) => {
-              // 使用新数组触发响应式更新
               console.log('[LOG-7] onBlocksChanged → visibleNodes.value, len=', nodes.length, 'first id=', nodes.length > 0 ? nodes[0].id : -1, 'last id=', nodes.length > 0 ? nodes[nodes.length - 1].id : -1);
               visibleNodes.value = [...nodes];
+              totalNodes.value = blockCacheManager.getTotalVisibleNodes();
             };
             
             // 加载第一个Block（可见区）
@@ -2837,20 +2648,36 @@ function clearCache() {
 }
 
 function toggleNode(nodeId) {
-  if (worker && !isParsing.value) {
-    worker.postMessage({ type: 'toggle', nodeId });
-  }
+  if (!blockCacheManager) return;
+  
+  blockCacheManager.toggleNode(nodeId);
+  totalNodes.value = blockCacheManager.getTotalVisibleNodes();
+  syncFlatVisibleRange();
 }
 
+watch(totalNodes, () => {
+  syncFlatVisibleRange();
+});
+
 function expandAll() {
-  if (worker && !isParsing.value) {
-    worker.postMessage({ type: 'expandAll' });
+  if (blockCacheManager) {
+    blockCacheManager.collapsedNodes.clear();
+    blockCacheManager._visibleCache = [...blockCacheManager.flatNodesCache];
+    blockCacheManager._visibleIdSet = new Set(blockCacheManager._visibleCache.map(n => n.id));
+    blockCacheManager.onBlocksChanged(blockCacheManager.getActiveNodes());
+    totalNodes.value = blockCacheManager.getTotalVisibleNodes();
   }
 }
 
 function collapseAll() {
-  if (worker && !isParsing.value) {
-    worker.postMessage({ type: 'collapseAll' });
+  if (blockCacheManager) {
+    for (const node of blockCacheManager.flatNodesCache) {
+      if (node.hasChildren) blockCacheManager.collapsedNodes.add(node.id);
+    }
+    blockCacheManager._visibleCache = [blockCacheManager.flatNodesCache[0]];
+    blockCacheManager._visibleIdSet = new Set([blockCacheManager.flatNodesCache[0].id]);
+    blockCacheManager.onBlocksChanged(blockCacheManager.getActiveNodes());
+    totalNodes.value = blockCacheManager.getTotalVisibleNodes();
   }
 }
 
@@ -2907,6 +2734,18 @@ function handleSearchPanelResize() {
   jsonTreeRef.value?.updateContainerHeight();
 }
 
+function handleSearchJump(flatId) {
+  if (!blockCacheManager || flatId < 0) return;
+  
+  const visibleIdx = blockCacheManager.prepareJumpToVisible(flatId);
+  if (visibleIdx < 0) return;
+  
+  searchHighlightLine.value = flatId;
+  jumpToLine.value = visibleIdx;
+  totalNodes.value = blockCacheManager.getTotalVisibleNodes();
+  jumpTrigger.value++;
+}
+
 function handleUpdateValue({ nodeId, value }) {
   console.log('Update value:', nodeId, value);
 }
@@ -2938,20 +2777,37 @@ function handleScroll(pos) {
 
 let _lastReqStartBlock = -1;
 let _lastReqEndBlock = -1;
+let _lastVisibleStart = 0;
+let _lastVisibleEnd = 0;
+
+function syncFlatVisibleRange() {
+  if (!blockCacheManager) return;
+  const range = blockCacheManager.visibleToFlatRange(_lastVisibleStart, _lastVisibleEnd);
+  flatVisibleStart.value = range.start;
+  flatVisibleEnd.value = range.end;
+}
 
 function handleNeedNodes(start, end) {
   if (!blockCacheManager) return;
   
+  _lastVisibleStart = start;
+  _lastVisibleEnd = end;
+  
+  const range = blockCacheManager.visibleToFlatRange(start, end);
+  flatVisibleStart.value = range.start;
+  flatVisibleEnd.value = range.end;
+  
   const blockSize = blockCacheManager.blockSize;
-  const startBlock = Math.max(0, Math.floor(start / blockSize) - 1);
-  const endBlock = Math.ceil(end / blockSize) + 1;
+  const startBlock = Math.max(0, Math.floor(range.start / blockSize) - 1);
+  const endBlock = Math.ceil(range.end / blockSize) + 1;
   
   if (_lastReqStartBlock === startBlock && _lastReqEndBlock === endBlock && visibleNodes.value.length > 0) return;
   _lastReqStartBlock = startBlock;
   _lastReqEndBlock = endBlock;
   
-  // [LOG-6] App: 收到JsonTreeView的数据请求
-  console.log('[LOG-6] handleNeedNodes start=', start, 'end=', end, '→ blocks', startBlock, '-', endBlock, 'totalNodes=', totalNodes.value, 'visibleNodes.len=', visibleNodes.value.length);
+  if (blockCacheManager.isRangeLoaded(startBlock, endBlock)) return;
+  
+  console.log('[LOG-6] handleNeedNodes start=', start, 'end=', end, '→ flatRange', range.start, '-', range.end, '→ blocks', startBlock, '-', endBlock, 'totalNodes=', totalNodes.value, 'visibleNodes.len=', visibleNodes.value.length);
   
   const t0 = performance.now();
   blockCacheManager.loadBlocks(startBlock, endBlock);
@@ -3075,6 +2931,8 @@ onUnmounted(() => {
           :jumpToLine="jumpToLine"
           :jump-trigger="jumpTrigger"
           :search-highlight-line="searchHighlightLine"
+          :flat-visible-start="flatVisibleStart"
+          :flat-visible-end="flatVisibleEnd"
           @toggleNode="toggleNode"
           @scroll="(line) => currentGlobalLine = line"
           @scrollData="(data) => { currentScrollTop = data.scrollTop; currentMaxScroll = data.maxScroll; }"
@@ -3117,7 +2975,7 @@ onUnmounted(() => {
       ref="searchPanelRef"
       :flatNodes="flatNodesForSearch"
       :totalNodes="totalNodes"
-      @jumpToLine="(line) => { jumpToLine = line; searchHighlightLine = line; jumpTrigger++; }"
+      @jumpToLine="(line) => handleSearchJump(line)"
       @heightChange="handleSearchPanelResize"
     />
 
